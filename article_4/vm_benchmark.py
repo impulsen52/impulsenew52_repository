@@ -243,16 +243,56 @@ def wait_postgres_ready(
     *,
     env: Optional[dict[str, str]],
     timeout: float = 120.0,
+    pg_isready_cmd_timeout: float = 30.0,
+    verbose: bool = False,
 ) -> None:
     deadline = time.time() + timeout
+    last_msg = 0.0
+    if verbose:
+        loc = (
+            f"{host.strip()}:{port}"
+            if _use_tcp(host)
+            else (
+                f"socket (user={user.strip()!r})"
+                if user.strip()
+                else "socket (default OS user)"
+            )
+        )
+        print(
+            f"vm_benchmark: waiting for PostgreSQL at {loc} (overall up to {timeout:.0f}s, "
+            f"each pg_isready up to {pg_isready_cmd_timeout:.0f}s)...",
+            file=sys.stderr,
+            flush=True,
+        )
+    last_msg = time.time()
     while time.time() < deadline:
+        if verbose and (time.time() - last_msg >= 15.0):
+            print(
+                "vm_benchmark: still waiting for PostgreSQL (pg_isready)...",
+                file=sys.stderr,
+                flush=True,
+            )
+            last_msg = time.time()
         cmd = ["pg_isready"]
         if user.strip():
             cmd.extend(["-U", user.strip()])
         if _use_tcp(host):
             cmd.extend(["-h", host.strip(), "-p", str(port)])
-        p = _run_cmd(cmd, env=env)
+        try:
+            p = _run_cmd(cmd, env=env, timeout=pg_isready_cmd_timeout)
+        except subprocess.TimeoutExpired:
+            if verbose:
+                print(
+                    "vm_benchmark: pg_isready subprocess timed out "
+                    f"(>{pg_isready_cmd_timeout:.0f}s); retrying.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            time.sleep(1)
+            continue
         if p.returncode == 0:
+            if verbose:
+                print("vm_benchmark: PostgreSQL is accepting connections.", file=sys.stderr, flush=True)
             return
         time.sleep(1)
     if _use_tcp(host):
@@ -272,6 +312,7 @@ def init_pgbench(
     pgbench_bin: str,
     pgbench_os_user: str,
     env: Optional[dict[str, str]],
+    verbose: bool = False,
 ) -> None:
     cmd = [
         pgbench_bin,
@@ -281,7 +322,18 @@ def init_pgbench(
         *_pg_conn_args(host, port, user, database),
     ]
     cmd = _wrap_pgbench_for_os_user(cmd, os_user=pgbench_os_user)
+    if verbose:
+        print(
+            "vm_benchmark: running pgbench -i (scale=%d); on slow disks this can take many minutes. "
+            "If this hangs with no CPU use, sudo may be waiting for a password — use "
+            "NOPASSWD for the target user, run from a tty, or --pgbench-no-sudo."
+            % scale,
+            file=sys.stderr,
+            flush=True,
+        )
     p = _run_cmd(cmd, timeout=3600, env=env)
+    if verbose:
+        print("vm_benchmark: pgbench -i finished.", file=sys.stderr, flush=True)
     if p.returncode != 0:
         err = f"pgbench -i failed: {p.stderr}"
         if _looks_like_pg_auth_failure(p.stderr):
@@ -569,6 +621,11 @@ def main() -> None:
         ),
     )
     ap.add_argument("-o", "--output", default="")
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Log startup phases (PostgreSQL wait, pgbench -i) to stderr for debugging.",
+    )
     args = ap.parse_args()
 
     _ident = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -659,7 +716,13 @@ def main() -> None:
         else list(DEFAULT_LOAD_LEVELS)
     )
 
-    wait_postgres_ready(args.pg_host, args.pg_port, args.pg_user, env=pg_env)
+    wait_postgres_ready(
+        args.pg_host,
+        args.pg_port,
+        args.pg_user,
+        env=pg_env,
+        verbose=args.verbose,
+    )
     if not args.skip_pgbench_init:
         init_pgbench(
             args.pg_host,
@@ -670,6 +733,7 @@ def main() -> None:
             pgbench_bin=pgbench_path,
             pgbench_os_user=pgbench_os_user,
             env=pg_env,
+            verbose=args.verbose,
         )
 
     linpack_env_map: dict[str, str] = {}
