@@ -1,0 +1,61 @@
+{
+  "environment": "native_vm",
+  "duration_sec": 30,
+  "load_levels": [
+    0
+  ],
+  "rows": [
+    {
+      "phase": "pgbench",
+      "load_percent": 0,
+      "tps": 867.199435,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.167941101,
+        "page_faults": 2270,
+        "context_switches": 175429
+      },
+      "stdout_tail": "pgbench (15.13 (Debian 15.13-0+deb12u1), server 15.17)\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 25932\nnumber of failed transactions: 0 (0.000%)\nlatency average = 92.251 ms\ninitial connection time = 227.265 ms\ntps = 867.199435 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30 -h 192.168.122.235 -p 5432':\n\n    30\u202f167\u202f941\u202f101 ns   duration_time                                                      \n             2\u202f270      page-faults                                                        \n           175\u202f429      context-switches                                                   \n\n      30,167941101 seconds time elapsed\n\n       1,757258000 seconds user\n       7,046453000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "virbr0",
+        "window_sec": 30.236045,
+        "rx_bytes_delta": 15729567,
+        "tx_bytes_delta": 23031704,
+        "rx_mbit_per_s": 4.161805,
+        "tx_mbit_per_s": 6.09384,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 0,
+      "tps": null,
+      "mflops": 12747.03,
+      "perf": {
+        "duration_sec": 16.984565218,
+        "page_faults": 141,
+        "context_switches": 123
+      },
+      "stdout_tail": "0000 times   0.23 seconds\n     20000 times   0.45 seconds\n     40000 times   0.88 seconds\n     80000 times   1.76 seconds\nOverhead for 1 matgen      0.00002 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.00 seconds\n       100 times   0.01 seconds\n      1000 times   0.07 seconds\n     10000 times   0.75 seconds\n     20000 times   1.50 seconds\nPasses used      13317 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00005    0.00000    0.00005   12776.72     0.0002     0.0010\n    0.00005    0.00000    0.00005   12826.49     0.0002     0.0010\n    0.00005    0.00000    0.00005   12797.05     0.0002     0.0010\n    0.00005    0.00000    0.00005   12529.53     0.0002     0.0010\n    0.00005    0.00000    0.00005   12805.35     0.0002     0.0010\nAverage                             12747.03\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00002 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00004    0.00000    0.00005   15108.21     0.0001     0.0008\n    0.00004    0.00000    0.00005   14949.90     0.0001     0.0008\n    0.00004    0.00000    0.00005   15112.41     0.0001     0.0008\n    0.00004    0.00000    0.00005   15174.04     0.0001     0.0008\n    0.00004    0.00000    0.00005   15174.07     0.0001     0.0008\nAverage                             15103.73\n\n\nUnrolled Double  Precision    12747.03 Mflops \n\n\n\n Performance counter stats for '/stressTest/anybench-master/bin/Linux/amd64/linpack_amd64-x86-64_Ofast':\n\n    16\u202f984\u202f565\u202f218 ns   duration_time                                                      \n               141      page-faults                                                        \n               123      context-switches                                                   \n\n      16,984565218 seconds time elapsed\n\n      16,970461000 seconds user\n       0,007997000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "virbr0",
+        "window_sec": 17.008681,
+        "rx_bytes_delta": 0,
+        "tx_bytes_delta": 0,
+        "rx_mbit_per_s": 0.0,
+        "tx_mbit_per_s": 0.0,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    }
+  ],
+  "linpack_docker_env": {},
+  "linpack_process_env": {}
+}

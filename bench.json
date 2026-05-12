@@ -1,0 +1,61 @@
+{
+  "environment": "native_vm",
+  "duration_sec": 30,
+  "load_levels": [
+    0
+  ],
+  "rows": [
+    {
+      "phase": "pgbench",
+      "load_percent": 0,
+      "tps": 1899.026364,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.090352377,
+        "page_faults": 3400,
+        "context_switches": 367045
+      },
+      "stdout_tail": "pgbench (15.13 (Debian 15.13-0+deb12u1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 56602\nnumber of failed transactions: 0 (0.000%)\nlatency average = 42.127 ms\ninitial connection time = 242.266 ms\ntps = 1899.026364 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30 -h localhost -p 5432':\n\n    30\u202f090\u202f352\u202f377 ns   duration_time                                                      \n             3\u202f400      page-faults                                                        \n           367\u202f045      context-switches                                                   \n\n      30,090352377 seconds time elapsed\n\n       2,475233000 seconds user\n      19,486018000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 30.153864,
+        "rx_bytes_delta": 111643647,
+        "tx_bytes_delta": 111643647,
+        "rx_mbit_per_s": 29.619725,
+        "tx_mbit_per_s": 29.619725,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 0,
+      "tps": null,
+      "mflops": 12698.23,
+      "perf": {
+        "duration_sec": 16.990484675,
+        "page_faults": 142,
+        "context_switches": 76
+      },
+      "stdout_tail": "0000 times   0.22 seconds\n     20000 times   0.44 seconds\n     40000 times   0.89 seconds\n     80000 times   1.77 seconds\nOverhead for 1 matgen      0.00002 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.00 seconds\n       100 times   0.01 seconds\n      1000 times   0.07 seconds\n     10000 times   0.75 seconds\n     20000 times   1.51 seconds\nPasses used      13260 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00005    0.00000    0.00006   12406.32     0.0002     0.0010\n    0.00005    0.00000    0.00005   12745.14     0.0002     0.0010\n    0.00005    0.00000    0.00005   12779.31     0.0002     0.0010\n    0.00005    0.00000    0.00005   12791.07     0.0002     0.0010\n    0.00005    0.00000    0.00005   12769.29     0.0002     0.0010\nAverage                             12698.23\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00002 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00004    0.00000    0.00005   14971.96     0.0001     0.0008\n    0.00004    0.00000    0.00005   15097.21     0.0001     0.0008\n    0.00004    0.00000    0.00005   15158.28     0.0001     0.0008\n    0.00004    0.00000    0.00005   15089.00     0.0001     0.0008\n    0.00004    0.00000    0.00005   15116.99     0.0001     0.0008\nAverage                             15086.69\n\n\nUnrolled Double  Precision    12698.23 Mflops \n\n\n\n Performance counter stats for '/stressTest/anybench-master/bin/Linux/amd64/linpack_amd64-x86-64_Ofast':\n\n    16\u202f990\u202f484\u202f675 ns   duration_time                                                      \n               142      page-faults                                                        \n                76      context-switches                                                   \n\n      16,990484675 seconds time elapsed\n\n      16,980999000 seconds user\n       0,007998000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 17.014498,
+        "rx_bytes_delta": 4328,
+        "tx_bytes_delta": 4328,
+        "rx_mbit_per_s": 0.002035,
+        "tx_mbit_per_s": 0.002035,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    }
+  ],
+  "linpack_docker_env": {},
+  "linpack_process_env": {}
+}

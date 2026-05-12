@@ -1,0 +1,208 @@
+{
+  "environment": "native_vm",
+  "duration_sec": 30,
+  "load_levels": [
+    0,
+    20,
+    40,
+    60,
+    80,
+    100
+  ],
+  "rows": [
+    {
+      "phase": "pgbench",
+      "load_percent": 0,
+      "tps": 2449.149336,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.070888618,
+        "page_faults": 2029,
+        "context_switches": 481549
+      },
+      "stdout_tail": "pgbench (15.13 (Debian 15.13-0+deb12u1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 73438\nnumber of failed transactions: 0 (0.000%)\nlatency average = 32.664 ms\ninitial connection time = 55.182 ms\ntps = 2449.149336 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30':\n\n    30\u202f070\u202f888\u202f618 ns   duration_time                                                      \n             2\u202f029      page-faults                                                        \n           481\u202f549      context-switches                                                   \n\n      30,070888618 seconds time elapsed\n\n       0,460012000 seconds user\n      15,661656000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 0,
+      "tps": null,
+      "mflops": 12881.88,
+      "perf": {
+        "duration_sec": 17.096750246,
+        "page_faults": 142,
+        "context_switches": 113
+      },
+      "stdout_tail": "   0.22 seconds\n     20000 times   0.44 seconds\n     40000 times   0.88 seconds\n     80000 times   1.75 seconds\nOverhead for 1 matgen      0.00002 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.00 seconds\n       100 times   0.01 seconds\n      1000 times   0.07 seconds\n     10000 times   0.74 seconds\n     20000 times   1.48 seconds\nPasses used      13511 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00005    0.00000    0.00005   12941.08     0.0002     0.0009\n    0.00005    0.00000    0.00005   12931.04     0.0002     0.0009\n    0.00005    0.00000    0.00005   12880.97     0.0002     0.0010\n    0.00005    0.00000    0.00005   12798.87     0.0002     0.0010\n    0.00005    0.00000    0.00005   12857.45     0.0002     0.0010\nAverage                             12881.88\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00002 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00005    0.00000    0.00005   14732.25     0.0001     0.0008\n    0.00005    0.00000    0.00005   14723.55     0.0001     0.0008\n    0.00005    0.00000    0.00005   14625.14     0.0001     0.0008\n    0.00005    0.00000    0.00005   14749.94     0.0001     0.0008\n    0.00005    0.00000    0.00005   14660.43     0.0001     0.0008\nAverage                             14698.26\n\n\nUnrolled Double  Precision    12881.88 Mflops \n\n\n\n Performance counter stats for '/home/user/stressTest/anybench-master/bin/Linux/amd64/linpack_amd64-x86-64_Ofast':\n\n    17\u202f096\u202f750\u202f246 ns   duration_time                                                      \n               142      page-faults                                                        \n               113      context-switches                                                   \n\n      17,096750246 seconds time elapsed\n\n      17,094051000 seconds user\n       0,000000000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 20,
+      "tps": 1363.211012,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.562571465,
+        "page_faults": 2038,
+        "context_switches": 387753
+      },
+      "stdout_tail": "pgbench (15.13 (Debian 15.13-0+deb12u1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 40491\nnumber of failed transactions: 0 (0.000%)\nlatency average = 58.685 ms\ninitial connection time = 449.833 ms\ntps = 1363.211012 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30':\n\n    30\u202f562\u202f571\u202f465 ns   duration_time                                                      \n             2\u202f038      page-faults                                                        \n           387\u202f753      context-switches                                                   \n\n      30,562571465 seconds time elapsed\n\n       0,546388000 seconds user\n       5,451611000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 20,
+      "tps": null,
+      "mflops": 708.19,
+      "perf": {
+        "duration_sec": 18.392816428,
+        "page_faults": 142,
+        "context_switches": 286
+      },
+      "stdout_tail": "   0.38 seconds\n      2000 times   0.89 seconds\n      4000 times   1.67 seconds\nOverhead for 1 matgen      0.00042 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.00 seconds\n       100 times   0.13 seconds\n       200 times   0.26 seconds\n       400 times   0.50 seconds\n       800 times   0.79 seconds\n      1600 times   2.22 seconds\nPasses used        719 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00096    0.00009    0.00104     658.27     0.0030     0.0186\n    0.00101    0.00000    0.00101     680.81     0.0029     0.0180\n    0.00083    0.00000    0.00083     830.12     0.0024     0.0148\n    0.00094    0.00015    0.00109     627.13     0.0032     0.0196\n    0.00092    0.00000    0.00092     744.62     0.0027     0.0165\nAverage                               708.19\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00040 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00086    0.00005    0.00091     751.96     0.0027     0.0163\n    0.00092    0.00000    0.00092     744.60     0.0027     0.0165\n    0.00106    0.00000    0.00106     649.15     0.0031     0.0189\n    0.00087    0.00007    0.00094     734.16     0.0027     0.0167\n    0.00086    0.00012    0.00098     700.45     0.0029     0.0175\nAverage                               716.06\n\n\nUnrolled Double  Precision      708.19 Mflops \n\n\n\n Performance counter stats for '/home/user/stressTest/anybench-master/bin/Linux/amd64/linpack_amd64-x86-64_Ofast':\n\n    18\u202f392\u202f816\u202f428 ns   duration_time                                                      \n               142      page-faults                                                        \n               286      context-switches                                                   \n\n      18,392816428 seconds time elapsed\n\n       1,146950000 seconds user\n       0,000000000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 40,
+      "tps": 1384.972335,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.185125299,
+        "page_faults": 2031,
+        "context_switches": 394323
+      },
+      "stdout_tail": "pgbench (15.13 (Debian 15.13-0+deb12u1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 41349\nnumber of failed transactions: 0 (0.000%)\nlatency average = 57.763 ms\ninitial connection time = 290.955 ms\ntps = 1384.972335 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30':\n\n    30\u202f185\u202f125\u202f299 ns   duration_time                                                      \n             2\u202f031      page-faults                                                        \n           394\u202f323      context-switches                                                   \n\n      30,185125299 seconds time elapsed\n\n       0,602416000 seconds user\n       5,374031000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 40,
+      "tps": null,
+      "mflops": 657.88,
+      "perf": {
+        "duration_sec": 15.235710093,
+        "page_faults": 141,
+        "context_switches": 242
+      },
+      "stdout_tail": "   0.00 seconds\n      1000 times   0.38 seconds\n      2000 times   0.69 seconds\n      4000 times   1.64 seconds\nOverhead for 1 matgen      0.00041 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.03 seconds\n       100 times   0.14 seconds\n       200 times   0.27 seconds\n       400 times   0.64 seconds\n       800 times   1.25 seconds\nPasses used        640 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00082    0.00009    0.00091     751.53     0.0027     0.0163\n    0.00108    0.00007    0.00115     598.77     0.0033     0.0205\n    0.00097    0.00011    0.00108     634.46     0.0032     0.0193\n    0.00094    0.00000    0.00094     729.03     0.0027     0.0168\n    0.00108    0.00011    0.00119     575.59     0.0035     0.0213\nAverage                               657.88\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00038 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00106    0.00000    0.00106     647.25     0.0031     0.0189\n    0.00093    0.00000    0.00093     735.25     0.0027     0.0167\n    0.00085    0.00009    0.00094     731.55     0.0027     0.0168\n    0.00072    0.00000    0.00072     951.28     0.0021     0.0129\n    0.00068    0.00000    0.00069    1002.43     0.0020     0.0122\nAverage                               813.55\n\n\nUnrolled Double  Precision      657.88 Mflops \n\n\n\n Performance counter stats for '/home/user/stressTest/anybench-master/bin/Linux/amd64/linpack_amd64-x86-64_Ofast':\n\n    15\u202f235\u202f710\u202f093 ns   duration_time                                                      \n               141      page-faults                                                        \n               242      context-switches                                                   \n\n      15,235710093 seconds time elapsed\n\n       0,941793000 seconds user\n       0,003977000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 60,
+      "tps": 1354.698252,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.60634312,
+        "page_faults": 2029,
+        "context_switches": 388247
+      },
+      "stdout_tail": "pgbench (15.13 (Debian 15.13-0+deb12u1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 40631\nnumber of failed transactions: 0 (0.000%)\nlatency average = 59.054 ms\ninitial connection time = 156.585 ms\ntps = 1354.698252 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30':\n\n    30\u202f606\u202f343\u202f120 ns   duration_time                                                      \n             2\u202f029      page-faults                                                        \n           388\u202f247      context-switches                                                   \n\n      30,606343120 seconds time elapsed\n\n       0,520509000 seconds user\n       5,480308000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 60,
+      "tps": null,
+      "mflops": 753.16,
+      "perf": {
+        "duration_sec": 14.744768965,
+        "page_faults": 142,
+        "context_switches": 245
+      },
+      "stdout_tail": "   0.00 seconds\n      1000 times   0.21 seconds\n      2000 times   0.85 seconds\n      4000 times   1.38 seconds\nOverhead for 1 matgen      0.00035 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.00 seconds\n       100 times   0.14 seconds\n       200 times   0.26 seconds\n       400 times   0.56 seconds\n       800 times   1.24 seconds\nPasses used        643 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00046    0.00000    0.00046    1480.14     0.0014     0.0083\n    0.00109    0.00000    0.00109     627.76     0.0032     0.0195\n    0.00104    0.00005    0.00109     631.75     0.0032     0.0194\n    0.00100    0.00000    0.00100     683.39     0.0029     0.0179\n    0.00142    0.00000    0.00142     483.53     0.0041     0.0254\nAverage                               781.31\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00038 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00081    0.00009    0.00090     763.16     0.0026     0.0161\n    0.00082    0.00000    0.00082     835.65     0.0024     0.0147\n    0.00093    0.00000    0.00093     734.99     0.0027     0.0167\n    0.00107    0.00000    0.00107     639.06     0.0031     0.0192\n    0.00086    0.00000    0.00087     792.96     0.0025     0.0155\nAverage                               753.16\n\n\nUnrolled Double  Precision      753.16 Mflops \n\n\n\n Performance counter stats for '/home/user/stressTest/anybench-master/bin/Linux/amd64/linpack_amd64-x86-64_Ofast':\n\n    14\u202f744\u202f768\u202f965 ns   duration_time                                                      \n               142      page-faults                                                        \n               245      context-switches                                                   \n\n      14,744768965 seconds time elapsed\n\n       0,946095000 seconds user\n       0,003909000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 80,
+      "tps": 1352.167628,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.681614429,
+        "page_faults": 2036,
+        "context_switches": 387000
+      },
+      "stdout_tail": "pgbench (15.13 (Debian 15.13-0+deb12u1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 40468\nnumber of failed transactions: 0 (0.000%)\nlatency average = 59.164 ms\ninitial connection time = 205.527 ms\ntps = 1352.167628 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30':\n\n    30\u202f681\u202f614\u202f429 ns   duration_time                                                      \n             2\u202f036      page-faults                                                        \n           387\u202f000      context-switches                                                   \n\n      30,681614429 seconds time elapsed\n\n       0,409599000 seconds user\n       5,497866000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 80,
+      "tps": null,
+      "mflops": 627.74,
+      "perf": {
+        "duration_sec": 15.444688529,
+        "page_faults": 142,
+        "context_switches": 247
+      },
+      "stdout_tail": "   0.00 seconds\n      1000 times   0.11 seconds\n      2000 times   0.95 seconds\n      4000 times   1.46 seconds\nOverhead for 1 matgen      0.00037 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.00 seconds\n       100 times   0.12 seconds\n       200 times   0.29 seconds\n       400 times   0.50 seconds\n       800 times   1.18 seconds\nPasses used        676 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00112    0.00009    0.00121     569.43     0.0035     0.0215\n    0.00108    0.00000    0.00108     634.44     0.0032     0.0193\n    0.00116    0.00011    0.00127     541.62     0.0037     0.0226\n    0.00088    0.00007    0.00096     718.81     0.0028     0.0171\n    0.00093    0.00009    0.00102     674.39     0.0030     0.0182\nAverage                               627.74\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00039 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00095    0.00000    0.00095     721.12     0.0028     0.0170\n    0.00083    0.00011    0.00094     729.43     0.0027     0.0168\n    0.00079    0.00000    0.00079     866.79     0.0023     0.0141\n    0.00074    0.00010    0.00084     819.57     0.0024     0.0150\n    0.00091    0.00000    0.00091     753.59     0.0027     0.0163\nAverage                               778.10\n\n\nUnrolled Double  Precision      627.74 Mflops \n\n\n\n Performance counter stats for '/home/user/stressTest/anybench-master/bin/Linux/amd64/linpack_amd64-x86-64_Ofast':\n\n    15\u202f444\u202f688\u202f529 ns   duration_time                                                      \n               142      page-faults                                                        \n               247      context-switches                                                   \n\n      15,444688529 seconds time elapsed\n\n       0,958267000 seconds user\n       0,000000000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 100,
+      "tps": 1385.16028,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.495817693,
+        "page_faults": 2035,
+        "context_switches": 395036
+      },
+      "stdout_tail": "pgbench (15.13 (Debian 15.13-0+deb12u1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 30 s\nnumber of transactions actually processed: 41447\nnumber of failed transactions: 0 (0.000%)\nlatency average = 57.755 ms\ninitial connection time = 226.440 ms\ntps = 1385.160280 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30':\n\n    30\u202f495\u202f817\u202f693 ns   duration_time                                                      \n             2\u202f035      page-faults                                                        \n           395\u202f036      context-switches                                                   \n\n      30,495817693 seconds time elapsed\n\n       0,441276000 seconds user\n       5,642459000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 100,
+      "tps": null,
+      "mflops": 602.38,
+      "perf": {
+        "duration_sec": 16.46294504,
+        "page_faults": 142,
+        "context_switches": 251
+      },
+      "stdout_tail": "matgen overhead\n        10 times   0.00 seconds\n       100 times   0.00 seconds\n      1000 times   0.32 seconds\n      2000 times   0.78 seconds\n      4000 times   1.55 seconds\nOverhead for 1 matgen      0.00039 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.07 seconds\n       100 times   0.09 seconds\n      1000 times   1.39 seconds\nPasses used        717 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00112    0.00009    0.00121     565.45     0.0035     0.0217\n    0.00104    0.00000    0.00104     657.74     0.0030     0.0186\n    0.00117    0.00000    0.00117     586.72     0.0034     0.0209\n    0.00103    0.00009    0.00112     611.13     0.0033     0.0201\n    0.00116    0.00000    0.00116     590.84     0.0034     0.0208\nAverage                               602.38\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00043 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00100    0.00000    0.00100     686.70     0.0029     0.0179\n    0.00099    0.00009    0.00108     637.37     0.0031     0.0192\n    0.00102    0.00000    0.00102     674.19     0.0030     0.0182\n    0.00090    0.00010    0.00100     687.88     0.0029     0.0178\n    0.00077    0.00000    0.00078     885.51     0.0023     0.0138\nAverage                               714.33\n\n\nUnrolled Double  Precision      602.38 Mflops \n\n\n\n Performance counter stats for '/home/user/stressTest/anybench-master/bin/Linux/amd64/linpack_amd64-x86-64_Ofast':\n\n    16\u202f462\u202f945\u202f040 ns   duration_time                                                      \n               142      page-faults                                                        \n               251      context-switches                                                   \n\n      16,462945040 seconds time elapsed\n\n       0,982526000 seconds user\n       0,000000000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null
+    }
+  ],
+  "linpack_docker_env": {},
+  "linpack_process_env": {}
+}

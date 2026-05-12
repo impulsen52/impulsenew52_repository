@@ -1,0 +1,206 @@
+{
+	"environment": "docker_on_vm_guest",
+	"duration_sec": 10,
+	"load_levels": [
+	  0,
+	  20,
+	  40,
+	  60,
+	  80,
+	  100
+	],
+	"rows": [
+	  {
+		"phase": "pgbench",
+		"load_percent": 0,
+		"tps": 10899.250469,
+		"mflops": null,
+		"perf": {
+		  "duration_sec": 10.145936111,
+		  "page_faults": 2157,
+		  "context_switches": 177
+		},
+		"stdout_tail": "pgbench (18.3 (Debian 18.3-1.pgdg13+1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 50\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 10 s\nnumber of transactions actually processed: 108895\nnumber of failed transactions: 0 (0.000%)\nlatency average = 7.340 ms\ninitial connection time = 57.333 ms\ntps = 10899.250469 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for 'docker exec postgres-bench pgbench -h localhost -U postgres -c 80 -j 8 -T 10 benchmark':\n\n    10\u202f145\u202f936\u202f111 ns   duration_time                                                      \n             2\u202f157      page-faults                                                        \n               177      context-switches                                                   \n\n      10,145936111 seconds time elapsed\n\n       0,011645000 seconds user\n       0,011645000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 0,
+		"exit_note": null
+	  },
+	  {
+		"phase": "linpack",
+		"load_percent": 0,
+		"tps": null,
+		"mflops": 8914.603536,
+		"perf": {
+		  "duration_sec": 27.557986461,
+		  "page_faults": 2483,
+		  "context_switches": 502
+		},
+		"stdout_tail": "Memory required:  315K.\n\n\nLINPACK benchmark, Double precision.\nMachine precision:  15 digits.\nArray size 200 X 200.\nAverage rolled and unrolled performance:\n\n    Reps Time(s) DGEFA   DGESL  OVERHEAD    KFLOPS\n----------------------------------------------------\n    4096   0.83  73.00%   2.91%  24.09%  8917763.055\n    8192   1.69  73.22%   2.89%  23.89%  8732422.499\n   16384   3.34  73.09%   2.89%  24.02%  8859234.772\n   32768   6.64  73.00%   2.88%  24.12%  8926060.709\n   65536  13.30  73.03%   2.88%  24.09%  8914603.536\n\n\n Performance counter stats for 'docker run --rm linpack-benchmark':\n\n    27\u202f557\u202f986\u202f461 ns   duration_time                                                      \n             2\u202f483      page-faults                                                        \n               502      context-switches                                                   \n\n      27,557986461 seconds time elapsed\n\n       0,014982000 seconds user\n       0,014982000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 10,
+		"exit_note": "Exit status is non-zero but the LINPACK table looks complete. Upstream ereyes01/linpack typically ends main() without 'return 0', so Docker often reports exit code 10 even after a successful run."
+	  },
+	  {
+		"phase": "pgbench",
+		"load_percent": 20,
+		"tps": 11024.157203,
+		"mflops": null,
+		"perf": {
+		  "duration_sec": 10.143165748,
+		  "page_faults": 2488,
+		  "context_switches": 226
+		},
+		"stdout_tail": "pgbench (18.3 (Debian 18.3-1.pgdg13+1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 50\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 10 s\nnumber of transactions actually processed: 110169\nnumber of failed transactions: 0 (0.000%)\nlatency average = 7.257 ms\ninitial connection time = 54.763 ms\ntps = 11024.157203 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for 'docker exec postgres-bench pgbench -h localhost -U postgres -c 80 -j 8 -T 10 benchmark':\n\n    10\u202f143\u202f165\u202f748 ns   duration_time                                                      \n             2\u202f488      page-faults                                                        \n               226      context-switches                                                   \n\n      10,143165748 seconds time elapsed\n\n       0,013606000 seconds user\n       0,010885000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 0,
+		"exit_note": null
+	  },
+	  {
+		"phase": "linpack",
+		"load_percent": 20,
+		"tps": null,
+		"mflops": 8927.689858,
+		"perf": {
+		  "duration_sec": 27.23839822,
+		  "page_faults": 2514,
+		  "context_switches": 549
+		},
+		"stdout_tail": "Memory required:  315K.\n\n\nLINPACK benchmark, Double precision.\nMachine precision:  15 digits.\nArray size 200 X 200.\nAverage rolled and unrolled performance:\n\n    Reps Time(s) DGEFA   DGESL  OVERHEAD    KFLOPS\n----------------------------------------------------\n    4096   0.84  73.08%   2.91%  24.01%  8794225.121\n    8192   1.67  73.02%   2.89%  24.09%  8895762.795\n   16384   3.34  73.01%   2.90%  24.09%  8876314.279\n   32768   6.74  73.12%   2.90%  23.98%  8778654.923\n   65536  13.29  72.98%   2.88%  24.13%  8927689.858\n\n\n Performance counter stats for 'docker run --rm linpack-benchmark':\n\n    27\u202f238\u202f398\u202f220 ns   duration_time                                                      \n             2\u202f514      page-faults                                                        \n               549      context-switches                                                   \n\n      27,238398220 seconds time elapsed\n\n       0,000000000 seconds user\n       0,031937000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 10,
+		"exit_note": "Exit status is non-zero but the LINPACK table looks complete. Upstream ereyes01/linpack typically ends main() without 'return 0', so Docker often reports exit code 10 even after a successful run."
+	  },
+	  {
+		"phase": "pgbench",
+		"load_percent": 40,
+		"tps": 11345.552354,
+		"mflops": null,
+		"perf": {
+		  "duration_sec": 10.137478508,
+		  "page_faults": 2429,
+		  "context_switches": 215
+		},
+		"stdout_tail": "pgbench (18.3 (Debian 18.3-1.pgdg13+1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 50\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 10 s\nnumber of transactions actually processed: 113399\nnumber of failed transactions: 0 (0.000%)\nlatency average = 7.051 ms\ninitial connection time = 53.609 ms\ntps = 11345.552354 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for 'docker exec postgres-bench pgbench -h localhost -U postgres -c 80 -j 8 -T 10 benchmark':\n\n    10\u202f137\u202f478\u202f508 ns   duration_time                                                      \n             2\u202f429      page-faults                                                        \n               215      context-switches                                                   \n\n      10,137478508 seconds time elapsed\n\n       0,003743000 seconds user\n       0,021140000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 0,
+		"exit_note": null
+	  },
+	  {
+		"phase": "linpack",
+		"load_percent": 40,
+		"tps": null,
+		"mflops": 8674.600726,
+		"perf": {
+		  "duration_sec": 27.659506954,
+		  "page_faults": 2513,
+		  "context_switches": 520
+		},
+		"stdout_tail": "Memory required:  315K.\n\n\nLINPACK benchmark, Double precision.\nMachine precision:  15 digits.\nArray size 200 X 200.\nAverage rolled and unrolled performance:\n\n    Reps Time(s) DGEFA   DGESL  OVERHEAD    KFLOPS\n----------------------------------------------------\n    4096   0.83  72.95%   2.89%  24.16%  8912040.998\n    8192   1.79  73.90%   2.96%  23.14%  8192485.186\n   16384   3.34  72.95%   2.88%  24.18%  8896941.141\n   32768   6.73  73.05%   2.89%  24.07%  8801633.272\n   65536  13.64  73.17%   2.89%  23.94%  8674600.726\n\n\n Performance counter stats for 'docker run --rm linpack-benchmark':\n\n    27\u202f659\u202f506\u202f954 ns   duration_time                                                      \n             2\u202f513      page-faults                                                        \n               520      context-switches                                                   \n\n      27,659506954 seconds time elapsed\n\n       0,005038000 seconds user\n       0,025194000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 10,
+		"exit_note": "Exit status is non-zero but the LINPACK table looks complete. Upstream ereyes01/linpack typically ends main() without 'return 0', so Docker often reports exit code 10 even after a successful run."
+	  },
+	  {
+		"phase": "pgbench",
+		"load_percent": 60,
+		"tps": 10601.007611,
+		"mflops": null,
+		"perf": {
+		  "duration_sec": 10.190059765,
+		  "page_faults": 2451,
+		  "context_switches": 271
+		},
+		"stdout_tail": "pgbench (18.3 (Debian 18.3-1.pgdg13+1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 50\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 10 s\nnumber of transactions actually processed: 106192\nnumber of failed transactions: 0 (0.000%)\nlatency average = 7.546 ms\ninitial connection time = 49.830 ms\ntps = 10601.007611 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for 'docker exec postgres-bench pgbench -h localhost -U postgres -c 80 -j 8 -T 10 benchmark':\n\n    10\u202f190\u202f059\u202f765 ns   duration_time                                                      \n             2\u202f451      page-faults                                                        \n               271      context-switches                                                   \n\n      10,190059765 seconds time elapsed\n\n       0,007803000 seconds user\n       0,018517000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 0,
+		"exit_note": null
+	  },
+	  {
+		"phase": "linpack",
+		"load_percent": 60,
+		"tps": null,
+		"mflops": 8633.551685,
+		"perf": {
+		  "duration_sec": 28.27375762,
+		  "page_faults": 2601,
+		  "context_switches": 557
+		},
+		"stdout_tail": "Memory required:  315K.\n\n\nLINPACK benchmark, Double precision.\nMachine precision:  15 digits.\nArray size 200 X 200.\nAverage rolled and unrolled performance:\n\n    Reps Time(s) DGEFA   DGESL  OVERHEAD    KFLOPS\n----------------------------------------------------\n    4096   0.85  73.06%   2.90%  24.05%  8731527.890\n    8192   1.68  73.00%   2.91%  24.09%  8826965.168\n   16384   3.38  73.02%   2.90%  24.08%  8755566.261\n   32768   7.25  73.85%   2.99%  23.16%  8074953.838\n   65536  13.70  73.20%   2.92%  23.89%  8633551.685\n\n\n Performance counter stats for 'docker run --rm linpack-benchmark':\n\n    28\u202f273\u202f757\u202f620 ns   duration_time                                                      \n             2\u202f601      page-faults                                                        \n               557      context-switches                                                   \n\n      28,273757620 seconds time elapsed\n\n       0,018958000 seconds user\n       0,015166000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 10,
+		"exit_note": "Exit status is non-zero but the LINPACK table looks complete. Upstream ereyes01/linpack typically ends main() without 'return 0', so Docker often reports exit code 10 even after a successful run."
+	  },
+	  {
+		"phase": "pgbench",
+		"load_percent": 80,
+		"tps": 10495.690546,
+		"mflops": null,
+		"perf": {
+		  "duration_sec": 10.163776325,
+		  "page_faults": 2442,
+		  "context_switches": 237
+		},
+		"stdout_tail": "pgbench (18.3 (Debian 18.3-1.pgdg13+1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 50\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 10 s\nnumber of transactions actually processed: 104874\nnumber of failed transactions: 0 (0.000%)\nlatency average = 7.622 ms\ninitial connection time = 69.284 ms\ntps = 10495.690546 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for 'docker exec postgres-bench pgbench -h localhost -U postgres -c 80 -j 8 -T 10 benchmark':\n\n    10\u202f163\u202f776\u202f325 ns   duration_time                                                      \n             2\u202f442      page-faults                                                        \n               237      context-switches                                                   \n\n      10,163776325 seconds time elapsed\n\n       0,005305000 seconds user\n       0,021221000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 0,
+		"exit_note": null
+	  },
+	  {
+		"phase": "linpack",
+		"load_percent": 80,
+		"tps": null,
+		"mflops": 8805.351505999999,
+		"perf": {
+		  "duration_sec": 27.88081073,
+		  "page_faults": 2487,
+		  "context_switches": 570
+		},
+		"stdout_tail": "Memory required:  315K.\n\n\nLINPACK benchmark, Double precision.\nMachine precision:  15 digits.\nArray size 200 X 200.\nAverage rolled and unrolled performance:\n\n    Reps Time(s) DGEFA   DGESL  OVERHEAD    KFLOPS\n----------------------------------------------------\n    4096   0.89  73.74%   2.96%  23.31%  8233639.835\n    8192   1.71  73.21%   2.89%  23.90%  8649874.382\n   16384   3.38  73.18%   2.89%  23.92%  8752102.709\n   32768   6.72  73.11%   2.88%  24.01%  8811699.906\n   65536  13.45  73.10%   2.89%  24.01%  8805351.506\n\n\n Performance counter stats for 'docker run --rm linpack-benchmark':\n\n    27\u202f880\u202f810\u202f730 ns   duration_time                                                      \n             2\u202f487      page-faults                                                        \n               570      context-switches                                                   \n\n      27,880810730 seconds time elapsed\n\n       0,000000000 seconds user\n       0,033696000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 10,
+		"exit_note": "Exit status is non-zero but the LINPACK table looks complete. Upstream ereyes01/linpack typically ends main() without 'return 0', so Docker often reports exit code 10 even after a successful run."
+	  },
+	  {
+		"phase": "pgbench",
+		"load_percent": 100,
+		"tps": 10268.012199,
+		"mflops": null,
+		"perf": {
+		  "duration_sec": 10.139385854,
+		  "page_faults": 2509,
+		  "context_switches": 230
+		},
+		"stdout_tail": "pgbench (18.3 (Debian 18.3-1.pgdg13+1))\ntransaction type: <builtin: TPC-B (sort of)>\nscaling factor: 50\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nmaximum number of tries: 1\nduration: 10 s\nnumber of transactions actually processed: 102377\nnumber of failed transactions: 0 (0.000%)\nlatency average = 7.791 ms\ninitial connection time = 76.833 ms\ntps = 10268.012199 (without initial connection time)\nstarting vacuum...end.\n\n Performance counter stats for 'docker exec postgres-bench pgbench -h localhost -U postgres -c 80 -j 8 -T 10 benchmark':\n\n    10\u202f139\u202f385\u202f854 ns   duration_time                                                      \n             2\u202f509      page-faults                                                        \n               230      context-switches                                                   \n\n      10,139385854 seconds time elapsed\n\n       0,004963000 seconds user\n       0,019854000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 0,
+		"exit_note": null
+	  },
+	  {
+		"phase": "linpack",
+		"load_percent": 100,
+		"tps": null,
+		"mflops": 8883.819346,
+		"perf": {
+		  "duration_sec": 27.376691707,
+		  "page_faults": 2477,
+		  "context_switches": 514
+		},
+		"stdout_tail": "Memory required:  315K.\n\n\nLINPACK benchmark, Double precision.\nMachine precision:  15 digits.\nArray size 200 X 200.\nAverage rolled and unrolled performance:\n\n    Reps Time(s) DGEFA   DGESL  OVERHEAD    KFLOPS\n----------------------------------------------------\n    4096   0.87  73.29%   2.89%  23.82%  8515429.230\n    8192   1.67  72.97%   2.87%  24.15%  8857159.802\n   16384   3.37  73.03%   2.89%  24.08%  8798251.874\n   32768   6.72  73.02%   2.88%  24.10%  8821651.246\n   65536  13.35  72.97%   2.89%  24.14%  8883819.346\n\n\n Performance counter stats for 'docker run --rm linpack-benchmark':\n\n    27\u202f376\u202f691\u202f707 ns   duration_time                                                      \n             2\u202f477      page-faults                                                        \n               514      context-switches                                                   \n\n      27,376691707 seconds time elapsed\n\n       0,008195000 seconds user\n       0,022617000 seconds sys\n\n\n",
+		"stderr_tail": "",
+		"error": null,
+		"exit_code": 10,
+		"exit_note": "Exit status is non-zero but the LINPACK table looks complete. Upstream ereyes01/linpack typically ends main() without 'return 0', so Docker often reports exit code 10 even after a successful run."
+	  }
+	]
+  }

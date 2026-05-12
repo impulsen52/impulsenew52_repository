@@ -1,0 +1,813 @@
+#!/usr/bin/env python3
+"""
+Native VM benchmark driver: single file, no Docker, no other project modules.
+
+Run on the guest OS after PostgreSQL, pgbench, stress-ng, and a linpack binary are
+available. For each CPU load level (0, 20, ...), optional stress-ng on the VM,
+then pgbench (with optional perf stat), then linpack (with optional perf stat).
+
+Optional --network-iface (e.g. eth0) records RX/TX Mbit/s per phase from /sys/class/net.
+If omitted and --pg-host is loopback (localhost, 127.0.0.1, ::1) or ``local``, ``lo`` is
+used automatically so local TCP/formatter tables get NIC columns (Unix sockets do not
+use ``lo`` - see stderr note).
+
+Dependencies (typical Debian package names):
+  postgresql, postgresql-client  ->  pg_isready, psql, pgbench (default path /usr/bin/pgbench)
+  stress-ng
+  perf / linux-tools (optional; use --no-perf if unavailable)
+  linpack: build from https://github.com/ereyes01/linpack
+    gcc -O3 -o linpack linpack.c -lm
+
+PostgreSQL note: pgbench -i creates pgbench tables inside an existing database; this
+script never runs CREATE DATABASE. Empty --pg-user / --pg-database means libpq defaults
+(OS user name, default database). Use --pg-host local to omit -h/-p (Unix socket).
+Use --skip-pgbench-init if you already ran pgbench -i. Defaults: -c 80 -j 8, -T from
+--duration.
+
+By default pgbench is run as OS user postgres: sudo -E -u postgres -- pgbench ...
+(peer auth). Use --pgbench-no-sudo to run pgbench as the invoking user, or
+--pgbench-os-user NAME to pick another OS account. Requires sudo in PATH unless
+--pgbench-no-sudo.
+
+Examples:
+  python3 vm_benchmark.py --duration 30 --pg-host local --linpack-binary /path/to/linpack
+  python3 vm_benchmark.py --duration 30 --pg-user postgres --pg-database mydb
+      --pg-password secret --linpack-binary /path/to/linpack -o out.json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import asdict, dataclass, field
+from typing import Any, Iterable, Optional
+
+
+DEFAULT_LOAD_LEVELS = tuple(range(0, 101, 20))
+DEFAULT_SCALE = 50
+DEFAULT_CLIENTS = 80
+DEFAULT_JOBS = 8
+
+LINPACK_NONZERO_EXIT_NOTE = (
+    "Exit status is non-zero but the LINPACK table looks complete. "
+    "Upstream ereyes01/linpack often omits 'return 0' in main()."
+)
+
+
+@dataclass
+class PerfMetrics:
+    duration_sec: Optional[float] = None
+    page_faults: Optional[int] = None
+    context_switches: Optional[int] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "duration_sec": self.duration_sec,
+            "page_faults": self.page_faults,
+            "context_switches": self.context_switches,
+        }
+
+
+@dataclass
+class BenchRow:
+    phase: str
+    load_percent: int
+    tps: Optional[float] = None
+    mflops: Optional[float] = None
+    perf: Optional[dict[str, Any]] = None
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    error: Optional[str] = None
+    exit_code: Optional[int] = None
+    exit_note: Optional[str] = None
+    network: Optional[dict[str, Any]] = None
+
+
+@dataclass
+class BenchReport:
+    environment: str
+    duration_sec: int
+    load_levels: list[int] = field(default_factory=list)
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    linpack_docker_env: dict[str, str] = field(default_factory=dict)
+    linpack_process_env: dict[str, str] = field(default_factory=dict)
+
+
+def _run_cmd(
+    cmd: list[str],
+    *,
+    timeout: Optional[float] = None,
+    cwd: Optional[str] = None,
+    env: Optional[dict[str, str]] = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=cwd,
+        check=False,
+        env=env,
+    )
+
+
+def _merge_env(extra: Optional[dict[str, str]]) -> dict[str, str]:
+    e = os.environ.copy()
+    if extra:
+        e.update(extra)
+    return e
+
+
+def _net_iface_exists(iface: str) -> bool:
+    return os.path.isdir(os.path.join("/sys/class/net", iface))
+
+
+def read_net_rx_tx_bytes(iface: str) -> tuple[int, int]:
+    base = f"/sys/class/net/{iface}/statistics"
+    with open(os.path.join(base, "rx_bytes"), encoding="utf-8") as f:
+        rx = int(f.read())
+    with open(os.path.join(base, "tx_bytes"), encoding="utf-8") as f:
+        tx = int(f.read())
+    return rx, tx
+
+
+def net_throughput_dict(
+    iface: str,
+    t0: float,
+    t1: float,
+    rx0: int,
+    tx0: int,
+    rx1: int,
+    tx1: int,
+) -> dict[str, Any]:
+    dt = t1 - t0
+    drx = max(0, rx1 - rx0)
+    dtx = max(0, tx1 - tx0)
+    if dt <= 0:
+        rx_mbps = tx_mbps = 0.0
+    else:
+        rx_mbps = (drx * 8.0) / (dt * 1e6)
+        tx_mbps = (dtx * 8.0) / (dt * 1e6)
+    return {
+        "interface": iface,
+        "window_sec": round(dt, 6),
+        "rx_bytes_delta": drx,
+        "tx_bytes_delta": dtx,
+        "rx_mbit_per_s": round(rx_mbps, 6),
+        "tx_mbit_per_s": round(tx_mbps, 6),
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark.",
+    }
+
+
+def _wrap_pgbench_for_os_user(cmd: list[str], *, os_user: str) -> list[str]:
+    """Run inner command as another OS user (for peer auth as linux postgres)."""
+    u = os_user.strip()
+    if not u:
+        return cmd
+    return ["sudo", "-E", "-u", u, "--"] + cmd
+
+
+def _looks_like_pg_auth_failure(stderr: Optional[str]) -> bool:
+    if not stderr:
+        return False
+    s = stderr.lower()
+    keys = (
+        "password",
+        "authentication",
+        "peer",
+        "fatal",
+        "md5",
+        "scram",
+        "pgpass",
+    )
+    if any(k in s for k in keys):
+        return True
+    # Common Russian phrasing: "authentication", "password"
+    if "\u043f\u0430\u0440\u043e\u043b" in s:
+        return True
+    if "\u043f\u043e\u0434\u043b\u0438\u043d\u043d\u043e\u0441\u0442" in s:
+        return True
+    return False
+
+
+def _pg_auth_failure_hint() -> str:
+    return (
+        "\n\nPostgreSQL authentication help:\n"
+        "  - TCP (e.g. --pg-host localhost): set the role password, e.g.\n"
+        "      export PGPASSWORD='your_secret'\n"
+        "    or pass  --pg-password 'your_secret'\n"
+        "    or use ~/.pgpass (see the psql documentation).\n"
+        "  - Unix socket / peer: use  --pg-host local  and  --pg-user <linux_user>\n"
+        "    if PostgreSQL has that role and pg_hba.conf allows peer for local sockets.\n"
+        "  - Already initialized DB? Skip init with  --skip-pgbench-init\n"
+        "    (you still need a working connection for the benchmark run).\n"
+    )
+
+
+def _use_tcp(host: str) -> bool:
+    """If False, use libpq default (usually Unix socket)."""
+    return bool(host.strip() and host.strip().lower() not in ("local", "unix"))
+
+
+def _infer_loopback_network_iface(pg_host: str) -> Optional[str]:
+    """Use lo for local DB when --network-iface was not set."""
+    h = pg_host.strip().lower()
+    if h in ("localhost", "127.0.0.1", "::1", "local", "unix"):
+        if _net_iface_exists("lo"):
+            return "lo"
+    return None
+
+
+def _pg_conn_args(
+    host: str, port: int, user: str, db: str
+) -> list[str]:
+    """Build libpq flags; omit -U/-d when user or db is empty (libpq defaults)."""
+    parts: list[str] = []
+    if _use_tcp(host):
+        parts.extend(["-h", host.strip(), "-p", str(port)])
+    if user.strip():
+        parts.extend(["-U", user.strip()])
+    if db.strip():
+        parts.extend(["-d", db.strip()])
+    return parts
+
+
+def wait_postgres_ready(
+    host: str,
+    port: int,
+    user: str,
+    *,
+    env: Optional[dict[str, str]],
+    timeout: float = 120.0,
+) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        cmd = ["pg_isready"]
+        if user.strip():
+            cmd.extend(["-U", user.strip()])
+        if _use_tcp(host):
+            cmd.extend(["-h", host.strip(), "-p", str(port)])
+        p = _run_cmd(cmd, env=env)
+        if p.returncode == 0:
+            return
+        time.sleep(1)
+    if _use_tcp(host):
+        loc = f"{host}:{port}"
+    else:
+        loc = f"socket (user={user.strip()!r})" if user.strip() else "socket (default OS user)"
+    raise TimeoutError(f"PostgreSQL not ready at {loc}.")
+
+
+def init_pgbench(
+    host: str,
+    port: int,
+    user: str,
+    database: str,
+    scale: int,
+    *,
+    pgbench_bin: str,
+    pgbench_os_user: str,
+    env: Optional[dict[str, str]],
+) -> None:
+    cmd = [
+        pgbench_bin,
+        "-i",
+        "-s",
+        str(scale),
+        *_pg_conn_args(host, port, user, database),
+    ]
+    cmd = _wrap_pgbench_for_os_user(cmd, os_user=pgbench_os_user)
+    p = _run_cmd(cmd, timeout=3600, env=env)
+    if p.returncode != 0:
+        err = f"pgbench -i failed: {p.stderr}"
+        if _looks_like_pg_auth_failure(p.stderr):
+            err += _pg_auth_failure_hint()
+        raise RuntimeError(err)
+
+
+def parse_pgbench_tps(text: str) -> Optional[float]:
+    m = re.search(r"tps\s*=\s*([\d.]+)", text, re.IGNORECASE)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def _linpack_bench_text_only(text: str) -> str:
+    head, sep, _ = text.partition("Performance counter stats")
+    if sep:
+        return head
+    return text
+
+
+def parse_linpack_mflops(text: str) -> Optional[float]:
+    bench = _linpack_bench_text_only(text)
+    for pat in (
+        r"([\d.eE+-]+)\s*MFLOPS",
+        r"MFLOPS\s*[=:]\s*([\d.eE+-]+)",
+        r"mflops\s*[=:]\s*([\d.eE+-]+)",
+        r"Speed\s*:?\s*([\d.eE+-]+)",
+    ):
+        m = re.search(pat, bench, re.IGNORECASE | re.MULTILINE)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                continue
+    row_re = re.compile(
+        r"^\s*\d+\s+[\d.]+\s+[\d.]+%\s+[\d.]+%\s+[\d.]+%\s+([\d.]+)\s*$",
+        re.MULTILINE,
+    )
+    matches = row_re.findall(bench)
+    if matches:
+        return float(matches[-1]) / 1000.0
+    return None
+
+
+def _linpack_run_ok(code: int, text: str, mflops: Optional[float]) -> bool:
+    if code == 0:
+        return True
+    bench = _linpack_bench_text_only(text)
+    if mflops is None or "LINPACK benchmark" not in bench or "KFLOPS" not in bench:
+        return False
+    return True
+
+
+def _perf_normalize_int(raw: str) -> int:
+    t = re.sub(r"[\s\u202f]", "", raw)
+    t = t.replace(",", "")
+    return int(t, 10)
+
+
+def _perf_normalize_elapsed(raw: str, unit: str) -> float:
+    t = re.sub(r"[\s\u202f]", "", raw.strip())
+    if "," in t and "." in t:
+        t = t.replace(",", "")
+    elif "," in t:
+        t = t.replace(",", ".")
+    val = float(t)
+    u = unit.lower()
+    if u.startswith("msec"):
+        return val / 1000.0
+    if u.startswith("usec"):
+        return val / 1_000_000.0
+    return val
+
+
+def _parse_perf_stat(stderr: str) -> PerfMetrics:
+    metrics = PerfMetrics()
+    m = re.search(
+        r"([0-9][0-9\u202f\s,.]*)\s+(msec|seconds|usec)\s+time elapsed",
+        stderr,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            metrics.duration_sec = _perf_normalize_elapsed(m.group(1), m.group(2))
+        except ValueError:
+            pass
+    m = re.search(r"([\d\u202f\s,]+)\s+page-faults", stderr)
+    if m:
+        try:
+            metrics.page_faults = _perf_normalize_int(m.group(1))
+        except ValueError:
+            pass
+    m = re.search(r"([\d\u202f\s,]+)\s+context-switches", stderr)
+    if m:
+        try:
+            metrics.context_switches = _perf_normalize_int(m.group(1))
+        except ValueError:
+            pass
+    return metrics
+
+
+def run_with_perf(
+    base_cmd: list[str],
+    *,
+    use_perf: bool = True,
+    timeout: Optional[float] = None,
+    env: Optional[dict[str, str]] = None,
+    prefix_cmd: Optional[list[str]] = None,
+) -> tuple[int, str, str, Optional[PerfMetrics]]:
+    """
+    Run base_cmd optionally under perf stat.
+
+    If prefix_cmd is set (e.g. sudo -u postgres --), it is placed *before* perf so that
+    perf's direct child is pgbench, not sudo; otherwise page-faults / context-switches
+    often stay at zero while only duration_time grows.
+    """
+    prefix = list(prefix_cmd) if prefix_cmd else []
+    if use_perf:
+        # Check perf as the invoking user only; the benchmark may run perf under sudo.
+        perf_check = _run_cmd(["perf", "stat", "true"], env=env)
+        if perf_check.returncode != 0:
+            use_perf = False
+    if use_perf:
+        inner = [
+            "perf",
+            "stat",
+            "-e",
+            "duration_time,page-faults,context-switches",
+            "-B",
+            "--",
+        ] + base_cmd
+        cmd = prefix + inner
+    else:
+        cmd = prefix + list(base_cmd)
+    p = _run_cmd(cmd, timeout=timeout, env=env)
+    perf_m: Optional[PerfMetrics] = None
+    if use_perf:
+        perf_m = _parse_perf_stat(p.stderr)
+    return p.returncode, p.stdout, p.stderr, perf_m
+
+
+class NativeStressController:
+    """Host stress-ng subprocess (not Docker)."""
+
+    def __init__(self) -> None:
+        self._proc: Optional[subprocess.Popen[Any]] = None
+
+    def start(self, load_percent: int) -> None:
+        self.stop()
+        if load_percent <= 0:
+            return
+        self._proc = subprocess.Popen(
+            [
+                "stress-ng",
+                "--cpu",
+                "0",
+                "--cpu-load",
+                str(load_percent),
+                "--timeout",
+                "0",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def stop(self) -> None:
+        if not self._proc:
+            return
+        self._proc.terminate()
+        try:
+            self._proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+        self._proc = None
+
+
+def report_to_json(report: BenchReport) -> str:
+    d = {
+        "environment": report.environment,
+        "duration_sec": report.duration_sec,
+        "load_levels": report.load_levels,
+        "rows": report.rows,
+        "linpack_docker_env": report.linpack_docker_env,
+        "linpack_process_env": report.linpack_process_env,
+    }
+    return json.dumps(d, indent=2)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--duration", type=int, default=30, help="pgbench -T seconds")
+    ap.add_argument(
+        "--pg-host",
+        default="localhost",
+        help="PostgreSQL host, or 'local' for default Unix socket (omit -h/-p).",
+    )
+    ap.add_argument("--pg-port", type=int, default=5432)
+    ap.add_argument(
+        "--pgbench-binary",
+        default="/usr/bin/pgbench",
+        metavar="PATH",
+        help="pgbench executable (default: /usr/bin/pgbench).",
+    )
+    ap.add_argument(
+        "--pgbench-os-user",
+        default="postgres",
+        metavar="USER",
+        help=(
+            "Run pgbench as this OS user via sudo -E -u (default: postgres; "
+            "use with --pgbench-no-sudo to run as the invoking user)."
+        ),
+    )
+    ap.add_argument(
+        "--pgbench-no-sudo",
+        action="store_true",
+        help="Do not wrap pgbench in sudo (run as current user).",
+    )
+    ap.add_argument(
+        "--pg-user",
+        default="",
+        metavar="NAME",
+        help="PostgreSQL role (empty = libpq default, usually current OS user).",
+    )
+    ap.add_argument(
+        "--pg-database",
+        default="",
+        metavar="NAME",
+        help="Database name (empty = libpq default, often same as role name).",
+    )
+    ap.add_argument(
+        "--pg-maintenance-db",
+        default="",
+        metavar="NAME",
+        help="Unused: this script never runs CREATE DATABASE.",
+    )
+    ap.add_argument(
+        "--pg-password",
+        default="",
+        help="If set, passed as PGPASSWORD for this process (avoid on shared systems).",
+    )
+    ap.add_argument("--scale", type=int, default=DEFAULT_SCALE, help="pgbench -i -s")
+    ap.add_argument("--clients", type=int, default=DEFAULT_CLIENTS, help="pgbench -c")
+    ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help="pgbench -j (threads)")
+    ap.add_argument(
+        "--linpack-binary",
+        required=True,
+        help="Path to ereyes01/linpack executable (build on this VM).",
+    )
+    ap.add_argument(
+        "--linpack-array-size",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Set LINPACK_ARRAY_SIZE in linpack's environment (>= 10).",
+    )
+    ap.add_argument(
+        "--loads",
+        default="",
+        help="Comma-separated CPU load percents (default 0,20,...,100)",
+    )
+    ap.add_argument("--no-perf", action="store_true")
+    ap.add_argument(
+        "--no-stress",
+        action="store_true",
+        help="Do not run stress-ng (all load levels run with 0%% background load).",
+    )
+    ap.add_argument(
+        "--skip-create-database",
+        action="store_true",
+        help="No-op (kept for compatibility; CREATE DATABASE is never run).",
+    )
+    ap.add_argument(
+        "--skip-pgbench-init",
+        action="store_true",
+        help="Skip pgbench -i (benchmark tables must already exist).",
+    )
+    ap.add_argument(
+        "--network-iface",
+        default="",
+        metavar="IFACE",
+        help=(
+            "If set (e.g. eth0), record NIC RX/TX from /sys during each pgbench/linpack phase. "
+            "If empty and --pg-host is localhost/127.0.0.1/::1/local, lo is used automatically."
+        ),
+    )
+    ap.add_argument("-o", "--output", default="")
+    args = ap.parse_args()
+
+    _ident = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+    def _require_ident(label: str, value: str) -> None:
+        if not value.strip():
+            return
+        if not _ident.match(value.strip()):
+            print(
+                f"{label} must be a simple identifier (letters, digits, underscore).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    _require_ident("--pg-database", args.pg_database)
+    _require_ident("--pg-maintenance-db", args.pg_maintenance_db)
+
+    if args.linpack_array_size is not None and args.linpack_array_size < 10:
+        print("--linpack-array-size must be >= 10", file=sys.stderr)
+        sys.exit(2)
+
+    linpack_path = os.path.abspath(args.linpack_binary)
+    if not os.path.isfile(linpack_path) or not os.access(linpack_path, os.X_OK):
+        print(f"Not an executable file: {linpack_path!r}", file=sys.stderr)
+        sys.exit(2)
+
+    pgbench_path = os.path.abspath(args.pgbench_binary)
+    if not os.path.isfile(pgbench_path) or not os.access(pgbench_path, os.X_OK):
+        print(f"Not an executable file: {pgbench_path!r}", file=sys.stderr)
+        sys.exit(2)
+
+    pgbench_os_user = "" if args.pgbench_no_sudo else args.pgbench_os_user.strip()
+    if pgbench_os_user:
+        if _run_cmd(["bash", "-lc", "command -v sudo"]).returncode != 0:
+            print(
+                "sudo not found in PATH but --pgbench-os-user is set. "
+                "Install sudo or use --pgbench-no-sudo.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if not args.no_stress:
+        if _run_cmd(["bash", "-lc", "command -v stress-ng"]).returncode != 0:
+            print(
+                "stress-ng not found in PATH. Install it or use --no-stress.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    network_iface = args.network_iface.strip() or None
+    if not network_iface:
+        auto_lo = _infer_loopback_network_iface(args.pg_host)
+        if auto_lo:
+            network_iface = auto_lo
+            if not _use_tcp(args.pg_host):
+                print(
+                    "Note: --pg-host local uses Unix sockets; lo RX/TX does not include "
+                    "Postgres traffic. Use --pg-host 127.0.0.1 (TCP) to measure DB on lo.",
+                    file=sys.stderr,
+                )
+    if network_iface and not _net_iface_exists(network_iface):
+        print(
+            f"Warning: --network-iface {network_iface!r} not found; skipping NIC stats.",
+            file=sys.stderr,
+        )
+        network_iface = None
+
+    extra_pg: dict[str, str] = {}
+    if args.pg_password:
+        extra_pg["PGPASSWORD"] = args.pg_password
+    elif os.environ.get("PGPASSWORD"):
+        pass
+    else:
+        u = args.pg_user.strip() or "default OS user"
+        print(
+            "Hint: TCP (--pg-host localhost) usually needs a password for the DB role "
+            f"({u!r}; export PGPASSWORD, --pg-password, or ~/.pgpass). "
+            "For peer auth on a socket: --pg-host local (omit --pg-user to use your "
+            "Linux login).",
+            file=sys.stderr,
+        )
+
+    pg_env = _merge_env(extra_pg)
+
+    load_levels = (
+        [int(x) for x in args.loads.split(",") if x.strip()]
+        if args.loads
+        else list(DEFAULT_LOAD_LEVELS)
+    )
+
+    wait_postgres_ready(args.pg_host, args.pg_port, args.pg_user, env=pg_env)
+    if not args.skip_pgbench_init:
+        init_pgbench(
+            args.pg_host,
+            args.pg_port,
+            args.pg_user,
+            args.pg_database,
+            args.scale,
+            pgbench_bin=pgbench_path,
+            pgbench_os_user=pgbench_os_user,
+            env=pg_env,
+        )
+
+    linpack_env_map: dict[str, str] = {}
+    if args.linpack_array_size is not None:
+        linpack_env_map["LINPACK_ARRAY_SIZE"] = str(args.linpack_array_size)
+    elif os.environ.get("LINPACK_ARRAY_SIZE"):
+        linpack_env_map["LINPACK_ARRAY_SIZE"] = os.environ["LINPACK_ARRAY_SIZE"]
+    linpack_run_env = _merge_env(linpack_env_map)
+
+    report = BenchReport(
+        environment="native_vm",
+        duration_sec=args.duration,
+        load_levels=list(load_levels),
+        linpack_process_env=dict(linpack_env_map),
+    )
+    stress = NativeStressController()
+
+    def _pgbench_cmd() -> list[str]:
+        return [
+            pgbench_path,
+            "-c",
+            str(args.clients),
+            "-j",
+            str(args.jobs),
+            "-T",
+            str(args.duration),
+            *_pg_conn_args(
+                args.pg_host, args.pg_port, args.pg_user, args.pg_database
+            ),
+        ]
+
+    pgbench_sudo_prefix: Optional[list[str]] = (
+        ["sudo", "-E", "-u", pgbench_os_user, "--"] if pgbench_os_user else None
+    )
+
+    try:
+        for load in load_levels:
+            print(f"--- Load {load}%: pgbench ---", file=sys.stderr)
+            if not args.no_stress:
+                stress.start(load)
+            try:
+                net_p: Optional[dict[str, Any]] = None
+                if network_iface:
+                    rx0, tx0 = read_net_rx_tx_bytes(network_iface)
+                    t0 = time.time()
+                code, out, err, perf_m = run_with_perf(
+                    _pgbench_cmd(),
+                    use_perf=not args.no_perf,
+                    timeout=float(args.duration) + 120,
+                    env=pg_env,
+                    prefix_cmd=pgbench_sudo_prefix,
+                )
+                if network_iface:
+                    t1 = time.time()
+                    rx1, tx1 = read_net_rx_tx_bytes(network_iface)
+                    net_p = net_throughput_dict(
+                        network_iface, t0, t1, rx0, tx0, rx1, tx1
+                    )
+                txt = out + err
+                tps = parse_pgbench_tps(txt)
+                err_p = None if code == 0 else f"pgbench exit {code}"
+                report.rows.append(
+                    asdict(
+                        BenchRow(
+                            phase="pgbench",
+                            load_percent=load,
+                            tps=tps,
+                            perf=perf_m.to_dict() if perf_m else None,
+                            stdout_tail=txt[-2000:],
+                            error=err_p,
+                            exit_code=code,
+                            exit_note=None,
+                            network=net_p,
+                        )
+                    )
+                )
+            finally:
+                stress.stop()
+
+            print(f"--- Load {load}%: linpack ---", file=sys.stderr)
+            if not args.no_stress:
+                stress.start(load)
+            try:
+                net_l: Optional[dict[str, Any]] = None
+                if network_iface:
+                    rx0, tx0 = read_net_rx_tx_bytes(network_iface)
+                    t0 = time.time()
+                code, out, err, perf_m = run_with_perf(
+                    [linpack_path],
+                    use_perf=not args.no_perf,
+                    timeout=600.0,
+                    env=linpack_run_env,
+                )
+                if network_iface:
+                    t1 = time.time()
+                    rx1, tx1 = read_net_rx_tx_bytes(network_iface)
+                    net_l = net_throughput_dict(
+                        network_iface, t0, t1, rx0, tx0, rx1, tx1
+                    )
+                text = out + err
+                mflops = parse_linpack_mflops(text)
+                ok = _linpack_run_ok(code, text, mflops)
+                err_l = None if ok else f"linpack exit {code}"
+                lp_note = (
+                    LINPACK_NONZERO_EXIT_NOTE if ok and code != 0 else None
+                )
+                if lp_note:
+                    print(
+                        f"linpack: exit_code={code} (see JSON exit_note); "
+                        "treating run as successful.",
+                        file=sys.stderr,
+                    )
+                report.rows.append(
+                    asdict(
+                        BenchRow(
+                            phase="linpack",
+                            load_percent=load,
+                            mflops=mflops,
+                            perf=perf_m.to_dict() if perf_m else None,
+                            stdout_tail=text[-2000:],
+                            error=err_l,
+                            exit_code=code,
+                            exit_note=lp_note,
+                            network=net_l,
+                        )
+                    )
+                )
+            finally:
+                stress.stop()
+    finally:
+        stress.stop()
+
+    text = report_to_json(report)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(text)
+    print(text)
+
+
+if __name__ == "__main__":
+    main()
