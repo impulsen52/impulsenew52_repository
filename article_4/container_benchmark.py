@@ -10,6 +10,8 @@ LAN (e.g. a DB VM IP from deploy_vm.py --print-ip). Set PGPASSWORD on the host w
 remote role requires a password (passed into the container via docker exec -e).
 
 Prerequisites: Docker, git (for linpack image build), optional perf (host).
+On rare arches (e.g. linux/e2k64) Docker Hub has no official postgres image; set
+POSTGRES_BENCHMARK_IMAGE or --postgres-image to a locally built Postgres image.
 """
 from __future__ import annotations
 
@@ -20,8 +22,9 @@ import sys
 from benchmark_core import (
     DEFAULT_LINPACK_IMAGE,
     DEFAULT_LOAD_LEVELS,
+    DEFAULT_POSTGRES_IMAGE,
     STRESS_IMAGE,
-    docker_available,
+    docker_check,
     ensure_benchmark_database,
     ensure_linpack_image,
     ensure_postgres_container,
@@ -43,7 +46,17 @@ def main() -> None:
     parser.add_argument(
         "--pg-container",
         default="postgres-bench",
-        help="Docker container name for postgres:latest (pgbench/psql run via docker exec)",
+        help="Docker container name (pgbench/psql via docker exec)",
+    )
+    parser.add_argument(
+        "--postgres-image",
+        default=DEFAULT_POSTGRES_IMAGE,
+        metavar="IMAGE",
+        help=(
+            "Postgres Docker image to pull/run (default: postgres:latest or "
+            "POSTGRES_BENCHMARK_IMAGE). Hub images have no linux/e2k64 — use an image "
+            "built on your arch."
+        ),
     )
     parser.add_argument(
         "--pg-host",
@@ -124,8 +137,11 @@ def main() -> None:
         print("--linpack-array-size must be >= 10", file=sys.stderr)
         sys.exit(2)
 
-    if not docker_available():
+    docker_ok, docker_err = docker_check()
+    if not docker_ok:
         print("Docker is not available or not running.", file=sys.stderr)
+        if docker_err:
+            print(docker_err, file=sys.stderr)
         sys.exit(1)
 
     load_levels = (
@@ -138,7 +154,10 @@ def main() -> None:
     if os.environ.get("PGPASSWORD"):
         docker_pg_exec_env = {"PGPASSWORD": os.environ["PGPASSWORD"]}
 
-    ensure_postgres_container(args.pg_container)
+    ensure_postgres_container(
+        args.pg_container,
+        postgres_image=args.postgres_image,
+    )
     wait_postgres_ready(
         args.pg_container,
         pg_host=args.pg_host,

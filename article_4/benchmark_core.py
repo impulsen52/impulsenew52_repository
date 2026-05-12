@@ -24,6 +24,10 @@ LINPACK_REPO = os.environ.get(
     "LINPACK_REPO", "https://github.com/ereyes01/linpack.git"
 )
 DEFAULT_LINPACK_IMAGE = "linpack-benchmark"
+# Official postgres on Docker Hub has no linux/e2k64 (and other rare arches); override via env or CLI.
+DEFAULT_POSTGRES_IMAGE = os.environ.get(
+    "POSTGRES_BENCHMARK_IMAGE", "postgres:latest"
+)
 # Passed into the linpack container as -e LINPACK_ARRAY_SIZE (smaller => shorter runs).
 LINPACK_ARRAY_SIZE_ENV = "LINPACK_ARRAY_SIZE"
 
@@ -149,9 +153,22 @@ def _docker_exec_cmd(
     return cmd
 
 
-def docker_available() -> bool:
+def docker_check() -> tuple[bool, str]:
+    """
+    Return (ok, detail). When ok is False, detail is stderr/stdout from `docker version`
+    (e.g. daemon not running, or docker CLI missing from PATH).
+    """
     p = _run_cmd(["docker", "version"])
-    return p.returncode == 0
+    if p.returncode == 0:
+        return True, ""
+    detail = (p.stderr or p.stdout or "").strip()
+    if not detail:
+        detail = f"docker version exited with code {p.returncode}"
+    return False, detail
+
+
+def docker_available() -> bool:
+    return docker_check()[0]
 
 
 def ensure_docker_image(image: str) -> None:
@@ -701,6 +718,7 @@ def ensure_postgres_container(
     name: str,
     *,
     password: str = "1",
+    postgres_image: str = DEFAULT_POSTGRES_IMAGE,
 ) -> None:
     p = _run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", name])
     if p.returncode == 0:
@@ -712,7 +730,7 @@ def ensure_postgres_container(
             raise RuntimeError(f"docker start postgres failed: {r.stderr}")
         return
 
-    ensure_docker_image("postgres:latest")
+    ensure_docker_image(postgres_image)
     print(f"Creating postgres container {name!r}...", file=sys.stderr)
     r = _run_cmd(
         [
@@ -723,7 +741,7 @@ def ensure_postgres_container(
             name,
             "-e",
             f"POSTGRES_PASSWORD={password}",
-            "postgres:latest",
+            postgres_image,
         ]
     )
     if r.returncode != 0:
