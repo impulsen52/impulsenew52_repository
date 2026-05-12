@@ -54,7 +54,7 @@ def main() -> None:
         metavar="IMAGE",
         help=(
             "Postgres Docker image to pull/run (default: postgres:latest or "
-            "POSTGRES_BENCHMARK_IMAGE). Hub images have no linux/e2k64 — use an image "
+            "POSTGRES_BENCHMARK_IMAGE). Hub images have no linux/e2k64 use an image "
             "built on your arch."
         ),
     )

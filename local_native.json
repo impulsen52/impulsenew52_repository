@@ -1,0 +1,316 @@
+{
+  "environment": "native_vm",
+  "duration_sec": 30,
+  "load_levels": [
+    0,
+    20,
+    40,
+    60,
+    80,
+    100
+  ],
+  "rows": [
+    {
+      "phase": "pgbench",
+      "load_percent": 0,
+      "tps": 104.495886,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 31.222163061,
+        "page_faults": 1058,
+        "context_switches": 22772
+      },
+      "stdout_tail": "transaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nduration: 30 s\nnumber of transactions actually processed: 3245\nlatency average = 765.580 ms\ntps = 104.495886 (including connections establishing)\ntps = 104.538029 (excluding connections establishing)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30 -h 127.0.0.1 -p 5432':\n\n    31\u202f222\u202f163\u202f061 ns   duration_time                                               \n             1\u202f058      page-faults                                                 \n            22\u202f772      context-switches                                            \n\n      31,222163061 seconds time elapsed\n\n       0,424718000 seconds user\n       1,486514000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 31.369253,
+        "rx_bytes_delta": 7323387,
+        "tx_bytes_delta": 7323387,
+        "rx_mbit_per_s": 1.86766,
+        "tx_mbit_per_s": 1.86766,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 0,
+      "tps": null,
+      "mflops": 1130.74,
+      "perf": {
+        "duration_sec": 17.026005283,
+        "page_faults": 191,
+        "context_switches": 24
+      },
+      "stdout_tail": "\nCalculating matgen overhead\n        10 times   0.00 seconds\n       100 times   0.01 seconds\n      1000 times   0.09 seconds\n     10000 times   0.91 seconds\n     20000 times   1.82 seconds\nOverhead for 1 matgen      0.00009 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.01 seconds\n       100 times   0.07 seconds\n      1000 times   0.68 seconds\n      2000 times   1.35 seconds\nPasses used       1477 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00059    0.00002    0.00061    1130.65     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.81     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.81     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.85     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.60     0.0018     0.0108\nAverage                              1130.74\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00009 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00058    0.00002    0.00060    1143.94     0.0017     0.0107\n    0.00058    0.00002    0.00060    1143.67     0.0017     0.0107\n    0.00058    0.00002    0.00060    1143.79     0.0017     0.0107\n    0.00058    0.00002    0.00060    1143.83     0.0017     0.0107\n    0.00058    0.00002    0.00060    1143.70     0.0017     0.0107\nAverage                              1143.79\n\n\nUnrolled Double  Precision     1130.74 Mflops \n\n\n\n Performance counter stats for '/root/anybench/bin/Linux/e2k/linpack_e2k-elbrus-v4_Ofast':\n\n    17\u202f026\u202f005\u202f283 ns   duration_time                                               \n               191      page-faults                                                 \n                24      context-switches                                            \n\n      17,026005283 seconds time elapsed\n\n      17,021657000 seconds user\n       0,003333000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 17.107327,
+        "rx_bytes_delta": 0,
+        "tx_bytes_delta": 0,
+        "rx_mbit_per_s": 0.0,
+        "tx_mbit_per_s": 0.0,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 20,
+      "tps": 103.849467,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.927828135,
+        "page_faults": 1064,
+        "context_switches": 22268
+      },
+      "stdout_tail": "transaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nduration: 30 s\nnumber of transactions actually processed: 3199\nlatency average = 770.346 ms\ntps = 103.849467 (including connections establishing)\ntps = 103.892409 (excluding connections establishing)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30 -h 127.0.0.1 -p 5432':\n\n    30\u202f927\u202f828\u202f135 ns   duration_time                                               \n             1\u202f064      page-faults                                                 \n            22\u202f268      context-switches                                            \n\n      30,927828135 seconds time elapsed\n\n       0,362357000 seconds user\n       1,529953000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 31.09188,
+        "rx_bytes_delta": 7200922,
+        "tx_bytes_delta": 7200922,
+        "rx_mbit_per_s": 1.852811,
+        "tx_mbit_per_s": 1.852811,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 20,
+      "tps": null,
+      "mflops": 1129.97,
+      "perf": {
+        "duration_sec": 16.851728891,
+        "page_faults": 192,
+        "context_switches": 72
+      },
+      "stdout_tail": "    100 times   0.01 seconds\n      1000 times   0.11 seconds\n      2000 times   0.18 seconds\n      4000 times   0.36 seconds\n      8000 times   0.83 seconds\n     16000 times   1.46 seconds\nOverhead for 1 matgen      0.00009 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.01 seconds\n       100 times   0.07 seconds\n      1000 times   0.68 seconds\n      2000 times   1.35 seconds\nPasses used       1476 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00059    0.00002    0.00061    1130.39     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.44     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.59     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.58     0.0018     0.0108\n    0.00059    0.00002    0.00061    1129.95     0.0018     0.0109\nAverage                              1130.39\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00009 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00059    0.00002    0.00061    1129.97     0.0018     0.0109\n    0.00059    0.00002    0.00061    1130.09     0.0018     0.0109\n    0.00059    0.00002    0.00061    1129.67     0.0018     0.0109\n    0.00059    0.00002    0.00061    1130.09     0.0018     0.0109\n    0.00059    0.00002    0.00061    1130.02     0.0018     0.0109\nAverage                              1129.97\n\n\nUnrolled Double  Precision     1129.97 Mflops \n\n\n\n Performance counter stats for '/root/anybench/bin/Linux/e2k/linpack_e2k-elbrus-v4_Ofast':\n\n    16\u202f851\u202f728\u202f891 ns   duration_time                                               \n               192      page-faults                                                 \n                72      context-switches                                            \n\n      16,851728891 seconds time elapsed\n\n      16,709759000 seconds user\n       0,003333000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 17.003427,
+        "rx_bytes_delta": 19836,
+        "tx_bytes_delta": 19836,
+        "rx_mbit_per_s": 0.009333,
+        "tx_mbit_per_s": 0.009333,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 40,
+      "tps": 100.446409,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.929562718,
+        "page_faults": 1071,
+        "context_switches": 21535
+      },
+      "stdout_tail": "transaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nduration: 30 s\nnumber of transactions actually processed: 3096\nlatency average = 796.445 ms\ntps = 100.446409 (including connections establishing)\ntps = 100.488037 (excluding connections establishing)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30 -h 127.0.0.1 -p 5432':\n\n    30\u202f929\u202f562\u202f718 ns   duration_time                                               \n             1\u202f071      page-faults                                                 \n            21\u202f535      context-switches                                            \n\n      30,929562718 seconds time elapsed\n\n       0,347010000 seconds user\n       1,477370000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 31.084277,
+        "rx_bytes_delta": 6711578,
+        "tx_bytes_delta": 6711578,
+        "rx_mbit_per_s": 1.727324,
+        "tx_mbit_per_s": 1.727324,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 40,
+      "tps": null,
+      "mflops": 1107.26,
+      "perf": {
+        "duration_sec": 17.181641092,
+        "page_faults": 187,
+        "context_switches": 10
+      },
+      "stdout_tail": "\nCalculating matgen overhead\n        10 times   0.00 seconds\n       100 times   0.01 seconds\n      1000 times   0.09 seconds\n     10000 times   0.91 seconds\n     20000 times   1.82 seconds\nOverhead for 1 matgen      0.00009 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.01 seconds\n       100 times   0.07 seconds\n      1000 times   0.68 seconds\n      2000 times   1.35 seconds\nPasses used       1477 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00059    0.00002    0.00061    1130.65     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.26     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.41     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.43     0.0018     0.0108\n    0.00059    0.00002    0.00061    1130.38     0.0018     0.0108\nAverage                              1130.42\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00009 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00060    0.00002    0.00062    1107.19     0.0018     0.0111\n    0.00060    0.00002    0.00062    1107.34     0.0018     0.0111\n    0.00060    0.00002    0.00062    1107.19     0.0018     0.0111\n    0.00060    0.00002    0.00062    1107.21     0.0018     0.0111\n    0.00060    0.00002    0.00062    1107.35     0.0018     0.0111\nAverage                              1107.26\n\n\nUnrolled Double  Precision     1107.26 Mflops \n\n\n\n Performance counter stats for '/root/anybench/bin/Linux/e2k/linpack_e2k-elbrus-v4_Ofast':\n\n    17\u202f181\u202f641\u202f092 ns   duration_time                                               \n               187      page-faults                                                 \n                10      context-switches                                            \n\n      17,181641092 seconds time elapsed\n\n      17,181287000 seconds user\n       0,000000000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 17.263947,
+        "rx_bytes_delta": 25572,
+        "tx_bytes_delta": 25572,
+        "rx_mbit_per_s": 0.01185,
+        "tx_mbit_per_s": 0.01185,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 60,
+      "tps": 97.57962,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.871865455,
+        "page_faults": 1067,
+        "context_switches": 20238
+      },
+      "stdout_tail": "transaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nduration: 30 s\nnumber of transactions actually processed: 3003\nlatency average = 819.843 ms\ntps = 97.579620 (including connections establishing)\ntps = 97.629798 (excluding connections establishing)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30 -h 127.0.0.1 -p 5432':\n\n    30\u202f871\u202f865\u202f455 ns   duration_time                                               \n             1\u202f067      page-faults                                                 \n            20\u202f238      context-switches                                            \n\n      30,871865455 seconds time elapsed\n\n       0,353598000 seconds user\n       1,444135000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 30.990953,
+        "rx_bytes_delta": 6652248,
+        "tx_bytes_delta": 6652248,
+        "rx_mbit_per_s": 1.71721,
+        "tx_mbit_per_s": 1.71721,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 60,
+      "tps": null,
+      "mflops": 1131.93,
+      "perf": {
+        "duration_sec": 17.077159052,
+        "page_faults": 193,
+        "context_switches": 41
+      },
+      "stdout_tail": "\nCalculating matgen overhead\n        10 times   0.00 seconds\n       100 times   0.01 seconds\n      1000 times   0.09 seconds\n     10000 times   0.93 seconds\n     20000 times   1.85 seconds\nOverhead for 1 matgen      0.00009 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.01 seconds\n       100 times   0.07 seconds\n      1000 times   0.68 seconds\n      2000 times   1.35 seconds\nPasses used       1476 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00058    0.00002    0.00061    1131.87     0.0018     0.0108\n    0.00058    0.00002    0.00061    1131.95     0.0018     0.0108\n    0.00058    0.00002    0.00061    1132.00     0.0018     0.0108\n    0.00058    0.00002    0.00061    1131.96     0.0018     0.0108\n    0.00058    0.00002    0.00061    1131.89     0.0018     0.0108\nAverage                              1131.93\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00009 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00058    0.00002    0.00060    1143.49     0.0017     0.0107\n    0.00058    0.00002    0.00060    1143.15     0.0017     0.0107\n    0.00058    0.00002    0.00060    1143.25     0.0017     0.0107\n    0.00058    0.00002    0.00060    1143.43     0.0017     0.0107\n    0.00058    0.00002    0.00060    1143.32     0.0017     0.0107\nAverage                              1143.33\n\n\nUnrolled Double  Precision     1131.93 Mflops \n\n\n\n Performance counter stats for '/root/anybench/bin/Linux/e2k/linpack_e2k-elbrus-v4_Ofast':\n\n    17\u202f077\u202f159\u202f052 ns   duration_time                                               \n               193      page-faults                                                 \n                41      context-switches                                            \n\n      17,077159052 seconds time elapsed\n\n      17,034033000 seconds user\n       0,000000000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 17.176481,
+        "rx_bytes_delta": 19836,
+        "tx_bytes_delta": 19836,
+        "rx_mbit_per_s": 0.009239,
+        "tx_mbit_per_s": 0.009239,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 80,
+      "tps": 101.877869,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 30.994549195,
+        "page_faults": 1068,
+        "context_switches": 21174
+      },
+      "stdout_tail": "transaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nduration: 30 s\nnumber of transactions actually processed: 3148\nlatency average = 785.254 ms\ntps = 101.877869 (including connections establishing)\ntps = 101.952944 (excluding connections establishing)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30 -h 127.0.0.1 -p 5432':\n\n    30\u202f994\u202f549\u202f195 ns   duration_time                                               \n             1\u202f068      page-faults                                                 \n            21\u202f174      context-switches                                            \n\n      30,994549195 seconds time elapsed\n\n       0,311281000 seconds user\n       1,599003000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 31.217141,
+        "rx_bytes_delta": 7055635,
+        "tx_bytes_delta": 7055635,
+        "rx_mbit_per_s": 1.808144,
+        "tx_mbit_per_s": 1.808144,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 80,
+      "tps": null,
+      "mflops": 1082.21,
+      "perf": {
+        "duration_sec": 17.218155675,
+        "page_faults": 187,
+        "context_switches": 506
+      },
+      "stdout_tail": "\nCalculating matgen overhead\n        10 times   0.00 seconds\n       100 times   0.01 seconds\n      1000 times   0.09 seconds\n     10000 times   0.91 seconds\n     20000 times   1.87 seconds\nOverhead for 1 matgen      0.00009 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.01 seconds\n       100 times   0.07 seconds\n      1000 times   0.68 seconds\n      2000 times   1.39 seconds\nPasses used       1443 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00060    0.00002    0.00062    1109.89     0.0018     0.0110\n    0.00068    0.00003    0.00072     956.92     0.0021     0.0128\n    0.00059    0.00002    0.00061    1117.04     0.0018     0.0110\n    0.00061    0.00002    0.00063    1093.27     0.0018     0.0112\n    0.00058    0.00002    0.00061    1133.92     0.0018     0.0108\nAverage                              1082.21\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00009 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00058    0.00002    0.00060    1141.91     0.0018     0.0107\n    0.00058    0.00002    0.00060    1141.41     0.0018     0.0107\n    0.00062    0.00002    0.00064    1074.35     0.0019     0.0114\n    0.00059    0.00002    0.00061    1120.04     0.0018     0.0109\n    0.00060    0.00002    0.00062    1104.47     0.0018     0.0111\nAverage                              1116.43\n\n\nUnrolled Double  Precision     1082.21 Mflops \n\n\n\n Performance counter stats for '/root/anybench/bin/Linux/e2k/linpack_e2k-elbrus-v4_Ofast':\n\n    17\u202f218\u202f155\u202f675 ns   duration_time                                               \n               187      page-faults                                                 \n               506      context-switches                                            \n\n      17,218155675 seconds time elapsed\n\n      16,811080000 seconds user\n       0,000000000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 17.300303,
+        "rx_bytes_delta": 0,
+        "tx_bytes_delta": 0,
+        "rx_mbit_per_s": 0.0,
+        "tx_mbit_per_s": 0.0,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "pgbench",
+      "load_percent": 100,
+      "tps": 108.8002,
+      "mflops": null,
+      "perf": {
+        "duration_sec": 31.264199077,
+        "page_faults": 1060,
+        "context_switches": 22755
+      },
+      "stdout_tail": "transaction type: <builtin: TPC-B (sort of)>\nscaling factor: 1\nquery mode: simple\nnumber of clients: 80\nnumber of threads: 8\nduration: 30 s\nnumber of transactions actually processed: 3385\nlatency average = 735.293 ms\ntps = 108.800200 (including connections establishing)\ntps = 108.894810 (excluding connections establishing)\nstarting vacuum...end.\n\n Performance counter stats for '/usr/bin/pgbench -c 80 -j 8 -T 30 -h 127.0.0.1 -p 5432':\n\n    31\u202f264\u202f199\u202f077 ns   duration_time                                               \n             1\u202f060      page-faults                                                 \n            22\u202f755      context-switches                                            \n\n      31,264199077 seconds time elapsed\n\n       0,419411000 seconds user\n       1,617731000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 31.413693,
+        "rx_bytes_delta": 7360891,
+        "tx_bytes_delta": 7360891,
+        "rx_mbit_per_s": 1.874569,
+        "tx_mbit_per_s": 1.874569,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    },
+    {
+      "phase": "linpack",
+      "load_percent": 100,
+      "tps": null,
+      "mflops": 983.71,
+      "perf": {
+        "duration_sec": 18.225927081,
+        "page_faults": 193,
+        "context_switches": 291
+      },
+      "stdout_tail": "\nCalculating matgen overhead\n        10 times   0.00 seconds\n       100 times   0.01 seconds\n      1000 times   0.09 seconds\n     10000 times   0.91 seconds\n     20000 times   2.05 seconds\nOverhead for 1 matgen      0.00010 seconds\n\nCalculating matgen/dgefa passes for 1 seconds\n        10 times   0.01 seconds\n       100 times   0.07 seconds\n      1000 times   0.87 seconds\n      2000 times   1.51 seconds\nPasses used       1327 \n\nTimes for array with leading dimension of 201\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00072    0.00002    0.00074     922.49     0.0022     0.0133\n    0.00063    0.00002    0.00065    1054.82     0.0019     0.0116\n    0.00066    0.00002    0.00068    1007.54     0.0020     0.0122\n    0.00068    0.00004    0.00072     951.63     0.0021     0.0129\n    0.00068    0.00002    0.00070     982.08     0.0020     0.0125\nAverage                               983.71\n\nCalculating matgen2 overhead\nOverhead for 1 matgen      0.00011 seconds\n\nTimes for array with leading dimension of 200\n\n      dgefa      dgesl      total     Mflops       unit      ratio\n    0.00075    0.00002    0.00077     888.49     0.0023     0.0138\n    0.00067    0.00002    0.00069     999.28     0.0020     0.0123\n    0.00074    0.00002    0.00076     903.66     0.0022     0.0136\n    0.00057    0.00002    0.00059    1155.58     0.0017     0.0106\n    0.00057    0.00002    0.00059    1165.02     0.0017     0.0105\nAverage                              1022.41\n\n\nUnrolled Double  Precision      983.71 Mflops \n\n\n\n Performance counter stats for '/root/anybench/bin/Linux/e2k/linpack_e2k-elbrus-v4_Ofast':\n\n    18\u202f225\u202f927\u202f081 ns   duration_time                                               \n               193      page-faults                                                 \n               291      context-switches                                            \n\n      18,225927081 seconds time elapsed\n\n      16,033150000 seconds user\n       0,003333000 seconds sys\n\n\n",
+      "stderr_tail": "",
+      "error": null,
+      "exit_code": 0,
+      "exit_note": null,
+      "network": {
+        "interface": "lo",
+        "window_sec": 18.308209,
+        "rx_bytes_delta": 0,
+        "tx_bytes_delta": 0,
+        "rx_mbit_per_s": 0.0,
+        "tx_mbit_per_s": 0.0,
+        "_note": "Counters are for the whole NIC (all processes), not just this benchmark."
+      }
+    }
+  ],
+  "linpack_docker_env": {},
+  "linpack_process_env": {}
+}

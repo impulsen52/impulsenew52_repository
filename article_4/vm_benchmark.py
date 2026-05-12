@@ -325,7 +325,7 @@ def init_pgbench(
     if verbose:
         print(
             "vm_benchmark: running pgbench -i (scale=%d); on slow disks this can take many minutes. "
-            "If this hangs with no CPU use, sudo may be waiting for a password — use "
+            "If this hangs with no CPU use, sudo may be waiting for a password use "
             "NOPASSWD for the target user, run from a tty, or --pgbench-no-sudo."
             % scale,
             file=sys.stderr,
