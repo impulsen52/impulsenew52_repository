@@ -884,7 +884,7 @@ def run_with_perf_monitor_pids_remote_ssh(
     """
     perf_inv = (
         "sudo -n -- perf stat -e duration_time,page-faults,context-switches "
-        '-B -p "$PIDS" -- sleep 86400'
+        '-B -p "$PIDS" -- sleep 86400 2>&1'
     )
     remote_script = (
         "set -e; "
@@ -929,7 +929,10 @@ def run_with_perf_monitor_pids_remote_ssh(
             "-o",
             "PreferredAuthentications=password,keyboard-interactive",
         ]
-        ssh_stdio = ["sshpass", "-e", "ssh", "-T"]
+        # -tt so the remote session gets a PTY: OpenSSH forwards SIGINT to perf, which
+        # flushes perf stat output. Plain -T often kills the TCP session without a clean
+        # remote perf shutdown (empty capture).
+        ssh_stdio = ["sshpass", "-e", "ssh", "-tt"]
     elif ssh_password_interactive:
         ssh_trailer = ["-o", "ConnectTimeout=25"]
         ssh_stdio = ["ssh", "-tt"]
@@ -944,7 +947,7 @@ def run_with_perf_monitor_pids_remote_ssh(
             "-o",
             "NumberOfPasswordPrompts=0",
         ]
-        ssh_stdio = ["ssh", "-T"]
+        ssh_stdio = ["ssh", "-tt"]
     if "-i" in ssh_extra and not use_sshpass:
         ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
     remote_argv: list[str]
@@ -1538,7 +1541,7 @@ def main() -> None:
                 elif use_remote_ssh_perf:
                     print(
                         f"vm_benchmark: remote server perf: opening SSH to {perf_ssh_target!r} "
-                        "(see --pgbench-perf-ssh-opts / ssh BatchMode + timeouts), "
+                        "(see --pgbench-perf-ssh-opts; ssh uses -tt for remote perf), "
                         "then starting pgbench.",
                         file=sys.stderr,
                         flush=True,
