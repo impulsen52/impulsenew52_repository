@@ -20,10 +20,12 @@ Dependencies (typical Debian package names):
   For --pgbench-perf-target server, non-root users need passwordless ``sudo -n``
   so ``perf -p`` can attach to postgres PIDs (or run the script as root).
   Remote DB: use ``--pgbench-perf-ssh user@db_host`` so ``perf -p`` runs on the
-  server over SSH (needs key-based or agent auth; ``perf`` and passwordless sudo
-  there unless ``--pgbench-perf-ssh-no-sudo``). SSH uses ``BatchMode=yes`` and a
-  connect timeout so missing keys do not hang silently; the DB ``postgres`` OS user
-  often cannot log in over SSH — use ``root@`` or another account with a shell.
+  server over SSH (needs key-based or agent auth; ``perf`` and usually passwordless
+  ``sudo -n`` there unless ``--pgbench-perf-ssh-no-sudo``). SSH uses ``BatchMode=yes`` and a
+  connect timeout so missing keys do not hang silently. The target user need not be root:
+  any account with SSH shell access and the ability to run ``perf`` against postgres PIDs
+  (e.g. sudoers: ``benchmark ALL=(ALL) NOPASSWD: /usr/bin/perf``). The DB ``postgres`` OS
+  role often has no SSH/shell — create a dedicated benchmark user instead of ``root@``.
   linpack: build from https://github.com/ereyes01/linpack
     gcc -O3 -o linpack linpack.c -lm
 
@@ -43,7 +45,7 @@ Examples:
   python3 vm_benchmark.py --duration 30 --pg-host local --linpack-binary /path/to/linpack
   python3 vm_benchmark.py --duration 30 --pg-user postgres --pg-database mydb
       --pg-password secret --linpack-binary /path/to/linpack -o out.json
-  python3 vm_benchmark.py ... --pg-host 192.168.122.10 --pgbench-perf-ssh postgres@192.168.122.10
+  python3 vm_benchmark.py ... --pg-host 192.168.122.10 --pgbench-perf-ssh bench@192.168.122.10
       --linpack-binary /path/to/linpack -o remote.json
 """
 from __future__ import annotations
@@ -948,9 +950,11 @@ def main() -> None:
         metavar="USER@HOST",
         help=(
             "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
-            "SSH target. Uses -o BatchMode=yes -o ConnectTimeout=25 after your "
-            "--pgbench-perf-ssh-opts (openssh: first -o wins). The DB OS role postgres "
-            "often has no shell/SSH: prefer root@host or an account that can log in and run perf."
+            "SSH user@host (root not required). Appends -o BatchMode=yes -o ConnectTimeout=25 "
+            "after --pgbench-perf-ssh-opts (openssh: first -o wins). Needs a real login shell "
+            "and perf on the server: typically NOPASSWD sudo for /usr/bin/perf, or use "
+            "--pgbench-perf-ssh-no-sudo when unprivileged perf can trace postgres. The cluster "
+            "OS user postgres often cannot SSH — use e.g. a dedicated benchmark account."
         ),
     )
     ap.add_argument(
@@ -962,7 +966,10 @@ def main() -> None:
     ap.add_argument(
         "--pgbench-perf-ssh-no-sudo",
         action="store_true",
-        help="On the DB host, run perf without sudo -n (e.g. ssh as root or permissive perf).",
+        help=(
+            "On the DB host, run perf without sudo -n (use when perf can attach to postgres "
+            "PIDs as the SSH user, e.g. relaxed kernel.perf_event_paranoid or matching caps)."
+        ),
     )
     ap.add_argument(
         "--no-stress",
