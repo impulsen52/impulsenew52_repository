@@ -6,24 +6,28 @@ Run on the guest OS after PostgreSQL, pgbench, stress-ng, and a linpack binary a
 available. For each CPU load level (0, 20, ...), optional stress-ng on the VM,
 then pgbench (with optional perf stat), then linpack (with optional perf stat).
 
-Optional --network-iface (e.g. eth0) records RX/TX Mbit/s per phase from /sys/class/net.
-If omitted, loopback ``--pg-host`` uses ``lo`` so local TCP rows get NIC columns
-(Unix sockets do not use ``lo`` — see stderr note); remote TCP hosts use the outbound
-interface from ``ip route get`` when ``ip`` is available.
-By default pgbench perf samples PostgreSQL server processes (``--pgbench-perf-target server``);
-use ``client`` to measure the pgbench driver instead.
+RX/TX during pgbench/linpack uses ``--network-iface`` if set; otherwise ``lo`` is auto-picked
+for socket/loopback ``--pg-host``, and for remote TCP the outbound NIC is inferred via
+``ip route get`` to ``--pg-host`` when ``ip`` is available (override with ``--network-iface``).
+
+By default pgbench ``perf`` targets the **PostgreSQL server** only: local ``pgrep`` when
+``--pg-host`` is a Unix socket or loopback TCP, or **SSH** to
+``{--pg-user or postgres}@<same host as TCP --pg-host>`` for other TCP hosts. Client needs
+``ssh``; if ``PGPASSWORD`` is set (``--pg-password`` / env), non-interactive SSH uses
+``sshpass`` when installed (same secret as the Unix login on the server). Optional
+``--pgbench-perf-ssh-opts`` passes extra ``ssh`` arguments (e.g. ``-i`` for a key).
+``--pgbench-perf-ssh-password`` forces interactive SSH password from a TTY.
+If ``authorized_keys`` uses ``command=...``, remote perf can break (shell ``set`` dumps).
 
 Dependencies (typical Debian package names):
   postgresql, postgresql-client  ->  pg_isready, psql, pgbench (default path /usr/bin/pgbench)
   stress-ng
   perf / linux-tools (optional; use --no-perf if unavailable).
-  For --pgbench-perf-target server, non-root users need passwordless ``sudo -n``
-  so ``perf -p`` can attach to postgres PIDs (or run the script as root).
-  Remote DB: use ``--pgbench-perf-ssh user@db_host`` so ``perf -p`` runs on the
-  server over SSH (needs key-based or agent auth; ``perf`` and passwordless sudo
-  there unless ``--pgbench-perf-ssh-no-sudo``). SSH uses ``BatchMode=yes`` and a
-  connect timeout so missing keys do not hang silently; the DB ``postgres`` OS user
-  often cannot log in over SSH — use ``root@`` or another account with a shell.
+  iproute2 (``ip``) helps auto-select ``--network-iface`` for remote TCP.
+  sshpass (optional) for non-interactive SSH password alongside ``PGPASSWORD``.
+  For local server perf, non-root users need passwordless ``sudo -n`` for ``perf -p`` on
+  this host, or run as root. On the **remote** host ``perf`` is run as
+  ``sudo -n -- perf ...`` from the SSH session (configure passwordless sudo for ``perf``).
   linpack: build from https://github.com/ereyes01/linpack
     gcc -O3 -o linpack linpack.c -lm
 
@@ -43,8 +47,8 @@ Examples:
   python3 vm_benchmark.py --duration 30 --pg-host local --linpack-binary /path/to/linpack
   python3 vm_benchmark.py --duration 30 --pg-user postgres --pg-database mydb
       --pg-password secret --linpack-binary /path/to/linpack -o out.json
-  python3 vm_benchmark.py ... --pg-host 192.168.122.10 --pgbench-perf-ssh postgres@192.168.122.10
-      --linpack-binary /path/to/linpack -o remote.json
+  python3 vm_benchmark.py ... --pg-host 192.168.122.10 --pg-user postgres
+      --pg-password SECRET --linpack-binary /path/to/linpack -o remote.json
 """
 from __future__ import annotations
 
@@ -54,6 +58,7 @@ import os
 import re
 import shlex
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -255,7 +260,7 @@ def _infer_loopback_network_iface(pg_host: str) -> Optional[str]:
 
 
 def _infer_route_network_iface(pg_host: str) -> Optional[str]:
-    """Outbound interface for TCP PG host, from `ip route get` (for /sys RX/TX)."""
+    """Outbound interface for TCP PG host from ``ip route get`` (RX/TX under /sys)."""
     h = pg_host.strip()
     if not h or h.lower() in ("local", "unix"):
         return None
@@ -283,12 +288,32 @@ def _infer_route_network_iface(pg_host: str) -> Optional[str]:
     return dev
 
 
+def _remote_perf_ssh_target(pg_host: str, pg_user: str) -> Optional[str]:
+    """
+    ``user@host`` for SSH perf when ``pg_host`` is a non-loopback TCP host.
+    Login name is ``pg_user`` if set, otherwise ``postgres``.
+    """
+    if _pg_host_colocated_for_server_perf(pg_host):
+        return None
+    if not _use_tcp(pg_host):
+        return None
+    u = pg_user.strip() or "postgres"
+    return f"{u}@{pg_host.strip()}"
+
+
 def _pg_host_colocated_for_server_perf(host: str) -> bool:
     """True if Postgres is expected on this machine (socket or loopback TCP)."""
     h = host.strip().lower()
     if not h or h in ("local", "unix"):
         return True
     return h in ("localhost", "127.0.0.1", "::1")
+
+
+def _ssh_capture_looks_like_forced_bash_set_dump(blob: str) -> bool:
+    """Heuristic: remote ran bare bash ``set`` (dump of env/functions), not ``perf stat``."""
+    if "Performance counter stats" in blob:
+        return False
+    return "BASH_EXECUTION_STRING=" in blob and "which ()" in blob
 
 
 def _native_postgres_host_pids() -> list[int]:
@@ -665,7 +690,7 @@ def run_with_perf_monitor_pids(
         print(
             "pgbench (server perf): not root and `sudo -n` unavailable; "
             "`perf -p` on postgres PIDs may yield empty metrics. "
-            "Allow NOPASSWD for sudo, run as root, or use --pgbench-perf-target client.",
+            "Allow NOPASSWD for sudo, run as root, or run vm_benchmark as a user that can use perf.",
             file=sys.stderr,
         )
     perf_check = _run_cmd(elev + ["perf", "stat", "true"], env=env)
@@ -721,7 +746,8 @@ def run_with_perf_monitor_pids_remote_ssh(
     *,
     ssh_target: str,
     ssh_extra: list[str],
-    remote_use_sudo: bool,
+    ssh_password_interactive: bool = False,
+    ssh_sshpass_password: Optional[str] = None,
     timeout: Optional[float] = None,
     env: Optional[dict[str, str]] = None,
     counter_target: str = "postgres_server_ssh",
@@ -729,17 +755,13 @@ def run_with_perf_monitor_pids_remote_ssh(
     """
     Run workload locally while ``perf stat -p $(pgrep -x postgres)`` runs on ``ssh_target``.
 
-    Mirrors :func:`run_with_perf_monitor_pids`: long remote ``sleep`` under perf,
-    stop via SIGINT when the local workload finishes.
+    Unattended (key) mode: send the remote script on **stdin** to ``bash -s``. Interactive
+    password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + same string as
+    ``SSHPASS`` (non-interactive; use with ``PGPASSWORD`` when the Unix login uses that secret).
     """
     perf_inv = (
         "sudo -n -- perf stat -e duration_time,page-faults,context-switches "
         '-B -p "$PIDS" -- sleep 86400'
-        if remote_use_sudo
-        else (
-            "perf stat -e duration_time,page-faults,context-switches "
-            '-B -p "$PIDS" -- sleep 86400'
-        )
     )
     remote_script = (
         "set -e; "
@@ -747,28 +769,89 @@ def run_with_perf_monitor_pids_remote_ssh(
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
-    ssh_cmd = (
-        ["ssh", "-T"]
-        + list(ssh_extra)
-        + [
+    use_sshpass = bool(ssh_sshpass_password)
+    if use_sshpass and ssh_password_interactive:
+        print(
+            "pgbench (remote server perf): internal error: sshpass and interactive "
+            "password both set; skipping remote perf.",
+            file=sys.stderr,
+            flush=True,
+        )
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+
+    if ssh_password_interactive and not use_sshpass and not sys.stdin.isatty():
+        print(
+            "pgbench (remote server perf): --pgbench-perf-ssh-password needs a real terminal "
+            "(stdin must be a TTY) so ssh can read the password; stdin is tied up when "
+            "running from a pipe or IDE. Use public-key auth instead, or run vm_benchmark "
+            "from an interactive shell. Running pgbench without remote perf.",
+            file=sys.stderr,
+            flush=True,
+        )
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+
+    use_stdin_for_remote_script = (
+        use_sshpass or not (ssh_password_interactive and sys.stdin.isatty())
+    )
+    if use_sshpass:
+        ssh_trailer = [
             "-o",
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=25",
-            ssh_target,
-            "bash",
-            "-lc",
-            remote_script,
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "PreferredAuthentications=password,keyboard-interactive",
         ]
-    )
+        ssh_stdio = ["sshpass", "-e", "ssh", "-T"]
+    elif ssh_password_interactive:
+        ssh_trailer = ["-o", "ConnectTimeout=25"]
+        ssh_stdio = ["ssh", "-tt"]
+    else:
+        ssh_trailer = [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=25",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "NumberOfPasswordPrompts=0",
+        ]
+        ssh_stdio = ["ssh", "-T"]
+    if "-i" in ssh_extra and not use_sshpass:
+        ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
+    remote_argv: list[str]
+    if use_stdin_for_remote_script:
+        remote_argv = ["bash", "--noprofile", "--norc", "-s"]
+    else:
+        remote_argv = ["bash", "--noprofile", "--norc", "-c", remote_script]
+    ssh_cmd = ssh_stdio + list(ssh_extra) + ssh_trailer + [ssh_target] + remote_argv
+    if use_sshpass:
+        popen_env: Optional[dict[str, str]] = dict(env) if env is not None else os.environ.copy()
+        popen_env["SSHPASS"] = ssh_sshpass_password  # type: ignore[assignment]
+    else:
+        popen_env = env
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "env": popen_env,
+    }
+    if use_stdin_for_remote_script:
+        popen_kwargs["stdin"] = subprocess.PIPE
+        popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["stdin"] = None
+        popen_kwargs["start_new_session"] = False
     try:
         perf_proc = subprocess.Popen(
             ssh_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=env,
-            start_new_session=True,
+            **popen_kwargs,
         )
     except OSError as exc:
         print(
@@ -778,6 +861,21 @@ def run_with_perf_monitor_pids_remote_ssh(
         )
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
+
+    if use_stdin_for_remote_script and perf_proc.stdin:
+        try:
+            perf_proc.stdin.write(remote_script + "\n")
+            perf_proc.stdin.close()
+        except OSError as exc:
+            print(
+                f"pgbench (remote server perf): could not send script to ssh ({exc}); "
+                "running without perf.",
+                file=sys.stderr,
+                flush=True,
+            )
+            _stop_perf_monitor_and_read(perf_proc)
+            p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+            return p.returncode, p.stdout, p.stderr, None
 
     time.sleep(0.2)
     if perf_proc.poll() is not None:
@@ -806,6 +904,21 @@ def run_with_perf_monitor_pids_remote_ssh(
     perf_m = _parse_perf_stat(blob)
     perf_m.counter_target = counter_target
     perf_m.raw_stderr = blob
+    if (
+        perf_m.duration_sec is None
+        and perf_m.page_faults is None
+        and perf_m.context_switches is None
+        and _ssh_capture_looks_like_forced_bash_set_dump(blob)
+    ):
+        print(
+            "pgbench (remote server perf): captured output looks like a bare bash 'set' dump, "
+            "not perf. Check the DB host: sshd_config ForceCommand / Match, "
+            "PAM/session hooks, or ~/.ssh/authorized_keys 'command=' (including other files "
+            "via AuthorizedKeysFile). Also ensure you run a current vm_benchmark that sends "
+            "the remote script via stdin (bash -s), not a truncated '-c' argument.",
+            file=sys.stderr,
+            flush=True,
+        )
     if (
         perf_m.duration_sec is None
         and perf_m.page_faults is None
@@ -962,36 +1075,21 @@ def main() -> None:
     )
     ap.add_argument("--no-perf", action="store_true")
     ap.add_argument(
-        "--pgbench-perf-target",
-        choices=("server", "client"),
-        default="server",
-        help=(
-            "pgbench: perf samples PostgreSQL server PIDs (default) while pgbench runs; "
-            "use client to wrap pgbench. Local server mode uses pgrep on this host; remote "
-            "TCP needs --pgbench-perf-ssh unless you accept client-side perf."
-        ),
-    )
-    ap.add_argument(
-        "--pgbench-perf-ssh",
-        default="",
-        metavar="USER@HOST",
-        help=(
-            "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
-            "SSH target. Uses -o BatchMode=yes -o ConnectTimeout=25 after your "
-            "--pgbench-perf-ssh-opts (openssh: first -o wins). The DB OS role postgres "
-            "often has no shell/SSH: prefer root@host or an account that can log in and run perf."
-        ),
-    )
-    ap.add_argument(
         "--pgbench-perf-ssh-opts",
         default="",
         metavar="ARGS",
-        help='Extra ssh arguments as one shell-quoted string (e.g. -i /path/key -p 2222).',
+        help=(
+            "Extra ssh(1) arguments for remote TCP server perf (one shell-quoted string), "
+            "e.g. -i /path/key -p 2222. SSH target is always {--pg-user or postgres}@<--pg-host>."
+        ),
     )
     ap.add_argument(
-        "--pgbench-perf-ssh-no-sudo",
+        "--pgbench-perf-ssh-password",
         action="store_true",
-        help="On the DB host, run perf without sudo -n (e.g. ssh as root or permissive perf).",
+        help=(
+            "Interactive SSH password for remote server perf (ssh -tt; needs a real TTY). "
+            "If omitted and PGPASSWORD is set, sshpass is used automatically when installed."
+        ),
     )
     ap.add_argument(
         "--no-stress",
@@ -1106,6 +1204,7 @@ def main() -> None:
                     f"Note: NIC stats use outbound iface {auto_rt!r} "
                     f"(routing to {args.pg_host.strip()}; override with --network-iface).",
                     file=sys.stderr,
+                    flush=True,
                 )
     if network_iface and not _net_iface_exists(network_iface):
         print(
@@ -1113,29 +1212,6 @@ def main() -> None:
             file=sys.stderr,
         )
         network_iface = None
-
-    perf_ssh_target = (args.pgbench_perf_ssh or "").strip()
-    perf_ssh_extra: list[str] = []
-    if perf_ssh_target:
-        if _run_cmd(["bash", "-lc", "command -v ssh"]).returncode != 0:
-            print("ssh not found in PATH but --pgbench-perf-ssh is set.", file=sys.stderr)
-            sys.exit(1)
-        try:
-            perf_ssh_extra = shlex.split(args.pgbench_perf_ssh_opts or "")
-        except ValueError as exc:
-            print(f"Could not parse --pgbench-perf-ssh-opts: {exc}", file=sys.stderr)
-            sys.exit(2)
-        if (args.pgbench_perf_target or "server").lower() == "client":
-            print(
-                "Warning: --pgbench-perf-ssh is ignored with --pgbench-perf-target client.",
-                file=sys.stderr,
-            )
-        elif _pg_host_colocated_for_server_perf(args.pg_host):
-            print(
-                "Note: --pgbench-perf-ssh ignored for colocated --pg-host "
-                "(local server perf is used).",
-                file=sys.stderr,
-            )
 
     extra_pg: dict[str, str] = {}
     if args.pg_password:
@@ -1153,6 +1229,38 @@ def main() -> None:
         )
 
     pg_env = _merge_env(extra_pg)
+
+    perf_ssh_target = _remote_perf_ssh_target(args.pg_host, args.pg_user)
+    perf_ssh_extra: list[str] = []
+    if perf_ssh_target:
+        if _run_cmd(["bash", "-lc", "command -v ssh"]).returncode != 0:
+            print(
+                "ssh not found in PATH but remote --pg-host requires SSH for server perf.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            perf_ssh_extra = shlex.split(args.pgbench_perf_ssh_opts or "")
+        except ValueError as exc:
+            print(f"Could not parse --pgbench-perf-ssh-opts: {exc}", file=sys.stderr)
+            sys.exit(2)
+
+    ssh_sshpass_pw: Optional[str] = None
+    if perf_ssh_target and not args.pgbench_perf_ssh_password:
+        _pw = (pg_env.get("PGPASSWORD") or "").strip()
+        if _pw:
+            if shutil.which("sshpass"):
+                ssh_sshpass_pw = _pw
+            else:
+                print(
+                    "Note: PGPASSWORD is set but sshpass is not in PATH; remote SSH uses "
+                    "public-key auth only. Install sshpass (e.g. apt install sshpass) to use "
+                    "the same password as PostgreSQL non-interactively, or use "
+                    "--pgbench-perf-ssh-password from a TTY, or add -i ... in "
+                    "--pgbench-perf-ssh-opts.",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     load_levels = (
         [int(x) for x in args.loads.split(",") if x.strip()]
@@ -1243,14 +1351,12 @@ def main() -> None:
                 def _full_pgbench_argv() -> list[str]:
                     return (pgbench_sudo_prefix or []) + _pgbench_cmd()
 
-                p_target = (args.pgbench_perf_target or "server").lower()
                 coloc = _pg_host_colocated_for_server_perf(args.pg_host)
-                use_server_perf = not args.no_perf and p_target == "server" and coloc
+                use_server_perf = not args.no_perf and coloc
                 use_remote_ssh_perf = (
                     not args.no_perf
-                    and p_target == "server"
                     and not coloc
-                    and bool(perf_ssh_target)
+                    and _use_tcp(args.pg_host)
                 )
                 to = _pgbench_timeout_sec()
                 if args.no_perf:
@@ -1259,7 +1365,7 @@ def main() -> None:
                 elif use_remote_ssh_perf:
                     print(
                         f"vm_benchmark: remote server perf: opening SSH to {perf_ssh_target!r} "
-                        f"(BatchMode=yes, ConnectTimeout=25s; see --pgbench-perf-ssh-opts), "
+                        "(see --pgbench-perf-ssh-opts / ssh BatchMode + timeouts), "
                         "then starting pgbench.",
                         file=sys.stderr,
                         flush=True,
@@ -1269,7 +1375,8 @@ def main() -> None:
                             _full_pgbench_argv(),
                             ssh_target=perf_ssh_target,
                             ssh_extra=perf_ssh_extra,
-                            remote_use_sudo=not args.pgbench_perf_ssh_no_sudo,
+                            ssh_password_interactive=args.pgbench_perf_ssh_password,
+                            ssh_sshpass_password=ssh_sshpass_pw,
                             timeout=to,
                             env=pg_env,
                         )
@@ -1316,29 +1423,14 @@ def main() -> None:
                                 p.stderr,
                                 None,
                             )
-                elif not coloc and p_target == "server":
+                else:
                     print(
-                        f"pgbench: --pg-host {args.pg_host!r} is not on this machine; "
-                        "using perf on the pgbench client.",
+                        "pgbench: could not apply server perf for this --pg-host; "
+                        "running without perf.",
                         file=sys.stderr,
                     )
-                    code, out, err, perf_m = run_with_perf(
-                        _pgbench_cmd(),
-                        use_perf=True,
-                        timeout=to,
-                        env=pg_env,
-                        prefix_cmd=pgbench_sudo_prefix,
-                        counter_target="pgbench_client",
-                    )
-                else:
-                    code, out, err, perf_m = run_with_perf(
-                        _pgbench_cmd(),
-                        use_perf=True,
-                        timeout=to,
-                        env=pg_env,
-                        prefix_cmd=pgbench_sudo_prefix,
-                        counter_target="pgbench_client",
-                    )
+                    p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
+                    code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
                 if network_iface:
                     t1 = time.time()
                     rx1, tx1 = read_net_rx_tx_bytes(network_iface)
