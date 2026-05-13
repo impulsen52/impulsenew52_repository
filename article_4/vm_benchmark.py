@@ -21,7 +21,9 @@ Dependencies (typical Debian package names):
   so ``perf -p`` can attach to postgres PIDs (or run the script as root).
   Remote DB: use ``--pgbench-perf-ssh user@db_host`` so ``perf -p`` runs on the
   server over SSH (needs key-based or agent auth; ``perf`` and passwordless sudo
-  there unless ``--pgbench-perf-ssh-no-sudo``).
+  there unless ``--pgbench-perf-ssh-no-sudo``). SSH uses ``BatchMode=yes`` and a
+  connect timeout so missing keys do not hang silently; the DB ``postgres`` OS user
+  often cannot log in over SSH — use ``root@`` or another account with a shell.
   linpack: build from https://github.com/ereyes01/linpack
     gcc -O3 -o linpack linpack.c -lm
 
@@ -745,7 +747,20 @@ def run_with_perf_monitor_pids_remote_ssh(
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
-    ssh_cmd = ["ssh", "-T", *ssh_extra, ssh_target, "bash", "-lc", remote_script]
+    ssh_cmd = (
+        ["ssh", "-T"]
+        + list(ssh_extra)
+        + [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=25",
+            ssh_target,
+            "bash",
+            "-lc",
+            remote_script,
+        ]
+    )
     try:
         perf_proc = subprocess.Popen(
             ssh_cmd,
@@ -759,6 +774,7 @@ def run_with_perf_monitor_pids_remote_ssh(
         print(
             f"pgbench (remote server perf): ssh failed ({exc}); running without perf.",
             file=sys.stderr,
+            flush=True,
         )
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
@@ -776,6 +792,7 @@ def run_with_perf_monitor_pids_remote_ssh(
             "(no postgres PIDs, ssh error, or perf/sudo failed). "
             f"Remote output (first 800 chars): {early[:800]!r}",
             file=sys.stderr,
+            flush=True,
         )
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
@@ -799,6 +816,7 @@ def run_with_perf_monitor_pids_remote_ssh(
             "pgbench (remote server perf): empty perf output. "
             "On the DB host check perf, kernel.perf_event_paranoid, and sudo -n for perf.",
             file=sys.stderr,
+            flush=True,
         )
     return rc, out, err, perf_m
 
@@ -959,8 +977,9 @@ def main() -> None:
         metavar="USER@HOST",
         help=(
             "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
-            "SSH target (same machine as Postgres). Requires ssh(1), non-interactive auth, "
-            "and perf on the DB host."
+            "SSH target. Uses -o BatchMode=yes -o ConnectTimeout=25 after your "
+            "--pgbench-perf-ssh-opts (openssh: first -o wins). The DB OS role postgres "
+            "often has no shell/SSH: prefer root@host or an account that can log in and run perf."
         ),
     )
     ap.add_argument(
@@ -1148,6 +1167,12 @@ def main() -> None:
         env=pg_env,
         verbose=args.verbose,
     )
+    if args.verbose:
+        print(
+            f"vm_benchmark: entering benchmark loop, load levels {load_levels}.",
+            file=sys.stderr,
+            flush=True,
+        )
     if not args.skip_pgbench_init:
         init_pgbench(
             args.pg_host,
@@ -1207,7 +1232,7 @@ def main() -> None:
 
     try:
         for load in load_levels:
-            print(f"--- Load {load}%: pgbench ---", file=sys.stderr)
+            print(f"--- Load {load}%: pgbench ---", file=sys.stderr, flush=True)
             if not args.no_stress:
                 stress.start(load)
             try:
@@ -1232,6 +1257,13 @@ def main() -> None:
                     p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
                     code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
                 elif use_remote_ssh_perf:
+                    print(
+                        f"vm_benchmark: remote server perf: opening SSH to {perf_ssh_target!r} "
+                        f"(BatchMode=yes, ConnectTimeout=25s; see --pgbench-perf-ssh-opts), "
+                        "then starting pgbench.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     try:
                         code, out, err, perf_m = run_with_perf_monitor_pids_remote_ssh(
                             _full_pgbench_argv(),
@@ -1334,7 +1366,7 @@ def main() -> None:
             finally:
                 stress.stop()
 
-            print(f"--- Load {load}%: linpack ---", file=sys.stderr)
+            print(f"--- Load {load}%: linpack ---", file=sys.stderr, flush=True)
             if not args.no_stress:
                 stress.start(load)
             try:
