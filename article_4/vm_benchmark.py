@@ -22,9 +22,9 @@ installed (same secret as the Unix login on the server), **unless** ``-i`` is gi
 ``--pgbench-perf-ssh-opts`` (``sshpass`` mode disables public-key auth and would ignore the key). Optional ``--pgbench-perf-ssh-opts``
 passes extra ``ssh`` arguments (e.g. ``-i`` for a key). ``--pgbench-perf-ssh-password`` forces
 interactive SSH password from a TTY. If ``authorized_keys`` uses ``command=...``, remote perf
-can break (shell ``set`` dumps). For ``sshpass``/non-interactive SSH, the remote monitor script
-is passed with ``bash -c`` (argv), not via stdin to ``bash -s``, so perf counters are not lost
-to an empty stdin edge case.
+can break (shell ``set`` dumps). **Public-key** unattended SSH sends the monitor script on
+**stdin** to ``bash -s``; **sshpass** mode uses ``bash -c`` (argv) instead, because piping to
+``bash -s`` over ``ssh -T`` is unreliable with ``sshpass``.
 
 Dependencies (typical Debian package names):
   postgresql, postgresql-client  ->  pg_isready, psql, pgbench (default path /usr/bin/pgbench)
@@ -913,9 +913,10 @@ def run_with_perf_monitor_pids_remote_ssh(
     after the monitor stops, this host fetches that file with a separate ``ssh … cat`` so
     metrics do not rely on piping ``perf`` output through the long-lived SSH session.
 
-    Unattended (key) mode: send the remote script on **stdin** to ``bash -s``. Interactive
-    password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + same string as
-    ``SSHPASS`` (non-interactive; use with ``PGPASSWORD`` when the Unix login uses that secret).
+    Unattended **public-key** SSH: send the monitor script on **stdin** to ``bash -s`` (avoids
+    fragile ``bash -c '…'`` one-liners on some distros). **sshpass** mode keeps ``bash -c``
+    because piping the script to ``bash -s`` over ``ssh -T`` is unreliable there. Interactive
+    password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + ``SSHPASS``.
     """
     perf_inv = (
         "sudo -n -- perf stat -o \"$PF\" -e duration_time,page-faults,context-switches "
@@ -952,12 +953,20 @@ def run_with_perf_monitor_pids_remote_ssh(
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
 
-    # Prefer ``bash -c SCRIPT`` (script in argv) over piping to ``bash -s``. With
-    # ``sshpass``/``-T``, forwarding our written stdin to the remote ``bash -s`` is
-    # unreliable on some systems (empty stdin → remote runs a bare ``set``, dumping env;
-    # ``BASH_EXECUTION_STRING=set``). Fall back to stdin only for very long scripts.
+    # ``bash -c '…'`` in argv can be truncated or mangled on some OpenSSH/sshd stacks (remote
+    # then runs a bare ``set`` → ``BASH_EXECUTION_STRING=set`` dump). Prefer ``bash -s`` +
+    # stdin whenever we are not using sshpass and not using an interactive TTY for ssh.
+    # With ``sshpass -T``, stdin to ``bash -s`` is unreliable; keep ``bash -c`` unless the
+    # script is huge (then stdin is the lesser evil).
     _remote_script_stdin_fallback_bytes = 100_000
-    use_stdin_for_remote_script = len(remote_script) > _remote_script_stdin_fallback_bytes
+    if len(remote_script) > _remote_script_stdin_fallback_bytes:
+        use_stdin_for_remote_script = True
+    elif use_sshpass:
+        use_stdin_for_remote_script = False
+    elif ssh_password_interactive and not use_sshpass:
+        use_stdin_for_remote_script = False
+    else:
+        use_stdin_for_remote_script = True
     ssh_stdio, ssh_trailer, _ = _vm_benchmark_ssh_stdio_trailer(
         list(ssh_extra),
         ssh_password_interactive=ssh_password_interactive,
