@@ -922,12 +922,20 @@ def run_with_perf_monitor_pids_remote_ssh(
         "sudo -n -- perf stat -o \"$PF\" -e duration_time,page-faults,context-switches "
         '-B -p "$PIDS" -- sleep 86400'
     )
-    # Non-login SSH (e.g. RED OS) often has a minimal PATH; ``pgrep`` may be missing or
-    # see no processes. Collect postgres/postmaster PIDs via pgrep and pidof fallbacks.
+    # ``perf stat -o`` as root via sudo can fail with "failed to create output file" on some
+    # setups (e.g. RED OS + /tmp + SELinux) when the path was pre-created by mktemp as
+    # postgres. Use a writable base dir, then relax permissions so sudo perf can write and
+    # the same user can ``cat`` the file after perf exits.
     remote_script = (
         "set -e\n"
         'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"\n'
-        "PF=$(mktemp /tmp/vm_benchmark_remote_perf.XXXXXX 2>/dev/null || mktemp)\n"
+        "_pfdir=\"${TMPDIR:-}\"\n"
+        'test -n "$_pfdir" && test -d "$_pfdir" && test -w "$_pfdir" || _pfdir="${HOME:-}"\n'
+        'test -n "$_pfdir" && test -d "$_pfdir" && test -w "$_pfdir" || _pfdir=/var/lib/pgsql\n'
+        'test -d "$_pfdir" && test -w "$_pfdir" || _pfdir=/var/tmp\n'
+        'test -d "$_pfdir" && test -w "$_pfdir" || _pfdir=/tmp\n'
+        'PF=$(mktemp "${_pfdir}/vm_benchmark_remote_perf.XXXXXX" 2>/dev/null || mktemp)\n'
+        'chmod a+rw "$PF" 2>/dev/null || chmod 666 "$PF" 2>/dev/null || true\n'
         f"echo {shlex.quote(REMOTE_PERF_OUT_MARKER)} \"$PF\"\n"
         "PIDS=$( {\n"
         "  pgrep -x postgres 2>/dev/null || true\n"
@@ -940,6 +948,7 @@ def run_with_perf_monitor_pids_remote_ssh(
         'if test -z "$PIDS"; then echo "vm_benchmark_remote: no postgres/postmaster PIDs '
         '(pgrep/pidof); check PATH, hidepid=, or process names on the DB host." >&2; '
         "exit 3; fi\n"
+        'cd "${HOME:-/var/lib/pgsql}" 2>/dev/null || cd /tmp\n'
         "exec " + perf_inv + "\n"
     )
     use_sshpass = bool(ssh_sshpass_password)
