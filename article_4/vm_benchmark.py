@@ -314,10 +314,63 @@ def _lookup_pgpass_password(host: str, port: int, user: str, database: str) -> O
                     and _pgpass_field_match(user, puser)
                 ):
                     continue
-                return ppassword
+                return ppassword.strip()
     except OSError:
         return None
     return None
+
+
+def _pgpass_path() -> str:
+    return os.environ.get("PGPASSFILE") or os.path.expanduser("~/.pgpass")
+
+
+def _pgpass_has_insecure_permissions(path: str) -> bool:
+    try:
+        return bool(os.stat(path).st_mode & (stat.S_IRWXG | stat.S_IRWXO))
+    except OSError:
+        return False
+
+
+def _warn_remote_ssh_password_readiness(
+    *,
+    perf_ssh_target: Optional[str],
+    use_interactive_ssh_password: bool,
+    resolved_password: Optional[str],
+    pg_host: str,
+    pg_port: int,
+) -> None:
+    """Explain missing sshpass, unreadable .pgpass, or no matching line before SSH fails."""
+    if not perf_ssh_target or use_interactive_ssh_password:
+        return
+    path = _pgpass_path()
+    if os.path.isfile(path) and _pgpass_has_insecure_permissions(path):
+        print(
+            f"Warning: {path} is group- or world-accessible; password lookup is skipped "
+            f"(use chmod 600). Libpq may still use it on some setups; vm_benchmark will not.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    sshpass_bin = shutil.which("sshpass")
+    if resolved_password and not sshpass_bin:
+        print(
+            "Warning: password is set (PGPASSWORD or readable .pgpass) for SSH, but "
+            "`sshpass` is missing from PATH — remote perf uses **public-key SSH only** "
+            "(typical cause of Permission denied). Install: apt install sshpass",
+            file=sys.stderr,
+            flush=True,
+        )
+    if (
+        not resolved_password
+        and os.path.isfile(path)
+        and not _pgpass_has_insecure_permissions(path)
+    ):
+        print(
+            f"Warning: no .pgpass entry matched host={pg_host!r} port={pg_port} for SSH "
+            f"(and PGPASSWORD unset). Example: {pg_host}:{pg_port}:*:postgres:UNIX_PASSWORD",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _infer_loopback_network_iface(pg_host: str) -> Optional[str]:
@@ -972,6 +1025,15 @@ def run_with_perf_monitor_pids_remote_ssh(
                 file=sys.stderr,
                 flush=True,
             )
+        elif "Permission denied" in early and use_sshpass:
+            print(
+                "Hint: sshpass sent a password but SSH rejected it. Check: (1) last field in "
+                ".pgpass must be the **Unix** login password for the SSH user (same name as "
+                "--pg-user, or `postgres` if unset), not only the DB role secret; "
+                "(2) `PasswordAuthentication yes` on the server; (3) correct user in .pgpass.",
+                file=sys.stderr,
+                flush=True,
+            )
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
 
@@ -1325,6 +1387,7 @@ def main() -> None:
             print(f"Could not parse --pgbench-perf-ssh-opts: {exc}", file=sys.stderr)
             sys.exit(2)
 
+    resolved_ssh_password: Optional[str] = None
     ssh_sshpass_pw: Optional[str] = None
     if perf_ssh_target and not args.pgbench_perf_ssh_password:
         _pw = (pg_env.get("PGPASSWORD") or "").strip()
@@ -1353,18 +1416,24 @@ def main() -> None:
                     or ""
                 ).strip()
         if _pw:
+            resolved_ssh_password = _pw
             if shutil.which("sshpass"):
                 ssh_sshpass_pw = _pw
-            else:
-                print(
-                    "Note: PGPASSWORD is set but sshpass is not in PATH; remote SSH uses "
-                    "public-key auth only. Install sshpass (e.g. apt install sshpass) to use "
-                    "the same password as PostgreSQL non-interactively, or use "
-                    "--pgbench-perf-ssh-password from a TTY, or add -i ... in "
-                    "--pgbench-perf-ssh-opts.",
-                    file=sys.stderr,
-                    flush=True,
-                )
+
+    _warn_remote_ssh_password_readiness(
+        perf_ssh_target=perf_ssh_target,
+        use_interactive_ssh_password=bool(args.pgbench_perf_ssh_password),
+        resolved_password=resolved_ssh_password,
+        pg_host=args.pg_host.strip(),
+        pg_port=args.pg_port,
+    )
+
+    if args.verbose and perf_ssh_target and ssh_sshpass_pw:
+        print(
+            "vm_benchmark: remote perf SSH: using sshpass (password from PGPASSWORD or .pgpass).",
+            file=sys.stderr,
+            flush=True,
+        )
 
     load_levels = (
         [int(x) for x in args.loads.split(",") if x.strip()]
