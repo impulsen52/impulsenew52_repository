@@ -19,6 +19,9 @@ Dependencies (typical Debian package names):
   perf / linux-tools (optional; use --no-perf if unavailable).
   For --pgbench-perf-target server, non-root users need passwordless ``sudo -n``
   so ``perf -p`` can attach to postgres PIDs (or run the script as root).
+  Remote DB: use ``--pgbench-perf-ssh user@db_host`` so ``perf -p`` runs on the
+  server over SSH (needs key-based or agent auth; ``perf`` and passwordless sudo
+  there unless ``--pgbench-perf-ssh-no-sudo``).
   linpack: build from https://github.com/ereyes01/linpack
     gcc -O3 -o linpack linpack.c -lm
 
@@ -38,6 +41,8 @@ Examples:
   python3 vm_benchmark.py --duration 30 --pg-host local --linpack-binary /path/to/linpack
   python3 vm_benchmark.py --duration 30 --pg-user postgres --pg-database mydb
       --pg-password secret --linpack-binary /path/to/linpack -o out.json
+  python3 vm_benchmark.py ... --pg-host 192.168.122.10 --pgbench-perf-ssh postgres@192.168.122.10
+      --linpack-binary /path/to/linpack -o remote.json
 """
 from __future__ import annotations
 
@@ -45,6 +50,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import select
 import signal
 import subprocess
@@ -679,6 +685,95 @@ def run_with_perf_monitor_pids(
     return rc, out, err, perf_m
 
 
+def run_with_perf_monitor_pids_remote_ssh(
+    workload_cmd: list[str],
+    *,
+    ssh_target: str,
+    ssh_extra: list[str],
+    remote_use_sudo: bool,
+    timeout: Optional[float] = None,
+    env: Optional[dict[str, str]] = None,
+    counter_target: str = "postgres_server_ssh",
+) -> tuple[int, str, str, Optional[PerfMetrics]]:
+    """
+    Run workload locally while ``perf stat -p $(pgrep -x postgres)`` runs on ``ssh_target``.
+
+    Mirrors :func:`run_with_perf_monitor_pids`: long remote ``sleep`` under perf,
+    stop via SIGINT when the local workload finishes.
+    """
+    perf_inv = (
+        "sudo -n -- perf stat -e duration_time,page-faults,context-switches "
+        '-B -p "$PIDS" -- sleep 86400'
+        if remote_use_sudo
+        else (
+            "perf stat -e duration_time,page-faults,context-switches "
+            '-B -p "$PIDS" -- sleep 86400'
+        )
+    )
+    remote_script = (
+        "set -e; "
+        r'PIDS=$(pgrep -x postgres 2>/dev/null | tr "\n" "," | sed "s/,$//"); '
+        'test -n "$PIDS" || exit 3; '
+        "exec " + perf_inv
+    )
+    ssh_cmd = ["ssh", "-T", *ssh_extra, ssh_target, "bash", "-lc", remote_script]
+    try:
+        perf_proc = subprocess.Popen(
+            ssh_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        print(
+            f"pgbench (remote server perf): ssh failed ({exc}); running without perf.",
+            file=sys.stderr,
+        )
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+
+    time.sleep(0.2)
+    if perf_proc.poll() is not None:
+        early = ""
+        if perf_proc.stdout:
+            try:
+                early = perf_proc.stdout.read()
+            except Exception:
+                pass
+        print(
+            "pgbench (remote server perf): could not start monitoring on DB host "
+            "(no postgres PIDs, ssh error, or perf/sudo failed). "
+            f"Remote output (first 800 chars): {early[:800]!r}",
+            file=sys.stderr,
+        )
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+
+    try:
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        rc, out, err = p.returncode, p.stdout, p.stderr
+    finally:
+        blob = _stop_perf_monitor_and_read(perf_proc)
+
+    perf_m = _parse_perf_stat(blob)
+    perf_m.counter_target = counter_target
+    perf_m.raw_stderr = blob
+    if (
+        perf_m.duration_sec is None
+        and perf_m.page_faults is None
+        and perf_m.context_switches is None
+        and not blob.strip()
+    ):
+        print(
+            "pgbench (remote server perf): empty perf output. "
+            "On the DB host check perf, kernel.perf_event_paranoid, and sudo -n for perf.",
+            file=sys.stderr,
+        )
+    return rc, out, err, perf_m
+
+
 class NativeStressController:
     """Host stress-ng subprocess (not Docker)."""
 
@@ -824,9 +919,31 @@ def main() -> None:
         choices=("server", "client"),
         default="server",
         help=(
-            "pgbench: perf samples PostgreSQL server PIDs on this machine (default) while "
-            "pgbench runs; use client to wrap pgbench. Server mode needs local/loopback DB."
+            "pgbench: perf samples PostgreSQL server PIDs (default) while pgbench runs; "
+            "use client to wrap pgbench. Local server mode uses pgrep on this host; remote "
+            "TCP needs --pgbench-perf-ssh unless you accept client-side perf."
         ),
+    )
+    ap.add_argument(
+        "--pgbench-perf-ssh",
+        default="",
+        metavar="USER@HOST",
+        help=(
+            "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
+            "SSH target (same machine as Postgres). Requires ssh(1), non-interactive auth, "
+            "and perf on the DB host."
+        ),
+    )
+    ap.add_argument(
+        "--pgbench-perf-ssh-opts",
+        default="",
+        metavar="ARGS",
+        help='Extra ssh arguments as one shell-quoted string (e.g. -i /path/key -p 2222).',
+    )
+    ap.add_argument(
+        "--pgbench-perf-ssh-no-sudo",
+        action="store_true",
+        help="On the DB host, run perf without sudo -n (e.g. ssh as root or permissive perf).",
     )
     ap.add_argument(
         "--no-stress",
@@ -939,6 +1056,29 @@ def main() -> None:
         )
         network_iface = None
 
+    perf_ssh_target = (args.pgbench_perf_ssh or "").strip()
+    perf_ssh_extra: list[str] = []
+    if perf_ssh_target:
+        if _run_cmd(["bash", "-lc", "command -v ssh"]).returncode != 0:
+            print("ssh not found in PATH but --pgbench-perf-ssh is set.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            perf_ssh_extra = shlex.split(args.pgbench_perf_ssh_opts or "")
+        except ValueError as exc:
+            print(f"Could not parse --pgbench-perf-ssh-opts: {exc}", file=sys.stderr)
+            sys.exit(2)
+        if (args.pgbench_perf_target or "server").lower() == "client":
+            print(
+                "Warning: --pgbench-perf-ssh is ignored with --pgbench-perf-target client.",
+                file=sys.stderr,
+            )
+        elif _pg_host_colocated_for_server_perf(args.pg_host):
+            print(
+                "Note: --pgbench-perf-ssh ignored for colocated --pg-host "
+                "(local server perf is used).",
+                file=sys.stderr,
+            )
+
     extra_pg: dict[str, str] = {}
     if args.pg_password:
         extra_pg["PGPASSWORD"] = args.pg_password
@@ -1042,10 +1182,39 @@ def main() -> None:
                 p_target = (args.pgbench_perf_target or "server").lower()
                 coloc = _pg_host_colocated_for_server_perf(args.pg_host)
                 use_server_perf = not args.no_perf and p_target == "server" and coloc
+                use_remote_ssh_perf = (
+                    not args.no_perf
+                    and p_target == "server"
+                    and not coloc
+                    and bool(perf_ssh_target)
+                )
                 to = _pgbench_timeout_sec()
                 if args.no_perf:
                     p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
                     code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
+                elif use_remote_ssh_perf:
+                    try:
+                        code, out, err, perf_m = run_with_perf_monitor_pids_remote_ssh(
+                            _full_pgbench_argv(),
+                            ssh_target=perf_ssh_target,
+                            ssh_extra=perf_ssh_extra,
+                            remote_use_sudo=not args.pgbench_perf_ssh_no_sudo,
+                            timeout=to,
+                            env=pg_env,
+                        )
+                    except OSError as exc:
+                        print(
+                            f"pgbench: remote server perf failed ({exc}); "
+                            "running without perf.",
+                            file=sys.stderr,
+                        )
+                        p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
+                        code, out, err, perf_m = (
+                            p.returncode,
+                            p.stdout,
+                            p.stderr,
+                            None,
+                        )
                 elif use_server_perf:
                     pids = _native_postgres_host_pids()
                     if not pids:
