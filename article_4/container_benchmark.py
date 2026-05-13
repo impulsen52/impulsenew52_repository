@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Docker host benchmark driver: PostgreSQL (pgbench) then linpack at CPU load 0-100%,
-with stress-ng on the host and perf stat metrics when available.
+with stress-ng on the host and perf stat metrics when available. For pgbench, perf
+samples PostgreSQL PIDs in the server container by default (``--pgbench-perf-target server``).
 
 Optional --network-iface records RX/TX Mbit/s per phase from Linux /sys counters.
 
@@ -40,8 +41,22 @@ def main() -> None:
     parser.add_argument(
         "--duration",
         type=int,
-        default=30,
-        help="pgbench -T duration in seconds (default 30)",
+        default=None,
+        metavar="SEC",
+        help=(
+            "pgbench -T: time limit in seconds (default 30 when not using --pgbench-transactions). "
+            "With --pgbench-transactions, pgbench runs until the transaction count finishes; "
+            "do not pass --duration unless you want it for documentation (it is not passed to pgbench)."
+        ),
+    )
+    parser.add_argument(
+        "--pgbench-transactions",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "pgbench -t: each client runs N transactions (no -T; run ends when work completes)."
+        ),
     )
     parser.add_argument(
         "--pg-container",
@@ -131,11 +146,35 @@ def main() -> None:
             "each pgbench/linpack phase (whole-machine NIC counters)."
         ),
     )
+    parser.add_argument(
+        "--pgbench-perf-target",
+        choices=("server", "client"),
+        default="server",
+        help=(
+            "pgbench: sample perf counters for PostgreSQL host PIDs while pgbench runs "
+            "unwrapped (server, default), or wrap the pgbench process (client). "
+            "Server mode needs loopback --pg-host from the Postgres container."
+        ),
+    )
     args = parser.parse_args()
 
     if args.linpack_array_size is not None and args.linpack_array_size < 10:
         print("--linpack-array-size must be >= 10", file=sys.stderr)
         sys.exit(2)
+
+    if args.pgbench_transactions is not None and args.pgbench_transactions < 1:
+        print("--pgbench-transactions must be >= 1", file=sys.stderr)
+        sys.exit(2)
+
+    if args.pgbench_transactions is None:
+        if args.duration is None:
+            args.duration = 30
+    elif args.duration is not None:
+        print(
+            "Note: --duration is not used when --pgbench-transactions is set "
+            "(pgbench uses -t only, no -T).",
+            file=sys.stderr,
+        )
 
     docker_ok, docker_err = docker_check()
     if not docker_ok:
@@ -197,6 +236,8 @@ def main() -> None:
         pg_host=args.pg_host,
         pg_port=args.pg_port,
         docker_pg_exec_env=docker_pg_exec_env,
+        pgbench_transactions=args.pgbench_transactions,
+        pgbench_perf_target=args.pgbench_perf_target,
     )
     text = report_to_json(report)
     if args.output:
