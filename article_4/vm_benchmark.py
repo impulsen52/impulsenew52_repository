@@ -882,9 +882,10 @@ def run_with_perf_monitor_pids_remote_ssh(
     Run workload locally while ``perf stat -p`` runs on ``ssh_target`` (PIDs from
     ``pgrep -x postgres`` or ``pgrep -x postmaster``).
 
-    Unattended (key) mode: send the remote script on **stdin** to ``bash -s``. Interactive
-    password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + same string as
-    ``SSHPASS`` (non-interactive; use with ``PGPASSWORD`` when the Unix login uses that secret).
+    Unattended modes (``sshpass`` or public key): ``bash --noprofile --norc -c SCRIPT`` only —
+    never ``bash -s`` on stdin with ``ssh -tt``: a TTY makes bash interactive (readline /
+    bracketed paste), so the script is echoed or split instead of run. Interactive password:
+    ``ssh -tt`` with inherited TTY, same ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e``.
     """
     perf_inv = (
         "sudo -n -- perf stat -e duration_time,page-faults,context-switches "
@@ -919,9 +920,18 @@ def run_with_perf_monitor_pids_remote_ssh(
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
 
-    use_stdin_for_remote_script = (
-        use_sshpass or not (ssh_password_interactive and sys.stdin.isatty())
-    )
+    if ssh_password_interactive and not use_sshpass and not sys.stdin.isatty():
+        print(
+            "pgbench (remote server perf): --pgbench-perf-ssh-password needs a real terminal "
+            "(stdin must be a TTY) so ssh can read the password; stdin is tied up when "
+            "running from a pipe or IDE. Use public-key auth instead, or run vm_benchmark "
+            "from an interactive shell. Running pgbench without remote perf.",
+            file=sys.stderr,
+            flush=True,
+        )
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+
     if use_sshpass:
         # Do not set BatchMode=yes: it disables password/keyboard-interactive auth even when
         # sshpass supplies the secret (interactive SSH works, sshpass + BatchMode fails).
@@ -954,11 +964,8 @@ def run_with_perf_monitor_pids_remote_ssh(
         ssh_stdio = ["ssh", "-tt"]
     if "-i" in ssh_extra and not use_sshpass:
         ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
-    remote_argv: list[str]
-    if use_stdin_for_remote_script:
-        remote_argv = ["bash", "--noprofile", "--norc", "-s"]
-    else:
-        remote_argv = ["bash", "--noprofile", "--norc", "-c", remote_script]
+
+    remote_argv = ["bash", "--noprofile", "--norc", "-c", remote_script]
     ssh_cmd = ssh_stdio + list(ssh_extra) + ssh_trailer + [ssh_target] + remote_argv
     if use_sshpass:
         popen_env: Optional[dict[str, str]] = dict(env) if env is not None else os.environ.copy()
@@ -972,12 +979,17 @@ def run_with_perf_monitor_pids_remote_ssh(
         "encoding": "utf-8",
         "env": popen_env,
     }
-    if use_stdin_for_remote_script:
-        popen_kwargs["stdin"] = subprocess.PIPE
-        popen_kwargs["start_new_session"] = True
-    else:
+    # Avoid tying up ssh stdin with a pipe when the remote uses bash -c only. Interactive
+    # password auth needs the real TTY on stdin for sshpass-less ssh -tt.
+    interactive_ssh_tty = bool(
+        ssh_password_interactive and not use_sshpass and sys.stdin.isatty()
+    )
+    if interactive_ssh_tty:
         popen_kwargs["stdin"] = None
         popen_kwargs["start_new_session"] = False
+    else:
+        popen_kwargs["stdin"] = subprocess.DEVNULL
+        popen_kwargs["start_new_session"] = True
     try:
         perf_proc = subprocess.Popen(
             ssh_cmd,
@@ -991,21 +1003,6 @@ def run_with_perf_monitor_pids_remote_ssh(
         )
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
-
-    if use_stdin_for_remote_script and perf_proc.stdin:
-        try:
-            perf_proc.stdin.write(remote_script + "\n")
-            perf_proc.stdin.close()
-        except OSError as exc:
-            print(
-                f"pgbench (remote server perf): could not send script to ssh ({exc}); "
-                "running without perf.",
-                file=sys.stderr,
-                flush=True,
-            )
-            _stop_perf_monitor_and_read(perf_proc)
-            p = _run_cmd(workload_cmd, timeout=timeout, env=env)
-            return p.returncode, p.stdout, p.stderr, None
 
     time.sleep(0.2)
     if perf_proc.poll() is not None:
@@ -1063,8 +1060,8 @@ def run_with_perf_monitor_pids_remote_ssh(
             "pgbench (remote server perf): captured output looks like a bare bash 'set' dump, "
             "not perf. Check the DB host: sshd_config ForceCommand / Match, "
             "PAM/session hooks, or ~/.ssh/authorized_keys 'command=' (including other files "
-            "via AuthorizedKeysFile). Also ensure you run a current vm_benchmark that sends "
-            "the remote script via stdin (bash -s), not a truncated '-c' argument.",
+            "via AuthorizedKeysFile). With ssh -tt use bash -c for the remote script, not "
+            "bash -s on stdin (interactive readline breaks stdin-fed scripts).",
             file=sys.stderr,
             flush=True,
         )
