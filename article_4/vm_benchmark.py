@@ -260,7 +260,7 @@ def _infer_loopback_network_iface(pg_host: str) -> Optional[str]:
 
 
 def _infer_route_network_iface(pg_host: str) -> Optional[str]:
-    """Outbound interface for TCP to pg_host (RX/TX under /sys)."""
+    """Outbound interface for TCP PG host from ``ip route get`` (RX/TX under /sys)."""
     h = pg_host.strip()
     if not h or h.lower() in ("local", "unix"):
         return None
@@ -268,20 +268,24 @@ def _infer_route_network_iface(pg_host: str) -> Optional[str]:
         return None
     if h.lower() in ("localhost", "127.0.0.1", "::1"):
         return None
+    out = ""
     for cmd in (["ip", "-4", "route", "get", h], ["ip", "route", "get", h]):
         try:
             p = _run_cmd(cmd, timeout=5)
         except OSError:
             return None
-        if p.returncode != 0 or not p.stdout.strip():
-            continue
-        m = re.search(r"\bdev\s+(\S+)", p.stdout.strip())
-        if not m:
-            continue
-        dev = m.group(1)
-        if dev != "lo" and _net_iface_exists(dev):
-            return dev
-    return None
+        if p.returncode == 0 and p.stdout.strip():
+            out = p.stdout.strip()
+            break
+    if not out:
+        return None
+    m = re.search(r"\bdev\s+(\S+)", out)
+    if not m:
+        return None
+    dev = m.group(1)
+    if dev == "lo" or not _net_iface_exists(dev):
+        return None
+    return dev
 
 
 def _remote_perf_ssh_target(pg_host: str, pg_user: str) -> Optional[str]:
@@ -1107,8 +1111,9 @@ def main() -> None:
         default="",
         metavar="IFACE",
         help=(
-            "NIC for RX/TX in JSON (e.g. eth0). If empty: use lo for loopback/local --pg-host; "
-            "for other TCP --pg-host try the outbound iface from 'ip route get' when ip(8) exists."
+            "If set (e.g. eth0), record NIC RX/TX from /sys during each pgbench/linpack phase. "
+            "If empty: loopback PG hosts use lo; remote TCP hosts use the outbound iface from "
+            "`ip route get` when `ip` is available (override with this flag)."
         ),
     )
     ap.add_argument("-o", "--output", default="")
@@ -1196,8 +1201,8 @@ def main() -> None:
             if auto_rt:
                 network_iface = auto_rt
                 print(
-                    f"Note: NIC stats use outbound iface {auto_rt!r} (routing to "
-                    f"{args.pg_host.strip()}; override with --network-iface).",
+                    f"Note: NIC stats use outbound iface {auto_rt!r} "
+                    f"(routing to {args.pg_host.strip()}; override with --network-iface).",
                     file=sys.stderr,
                     flush=True,
                 )
