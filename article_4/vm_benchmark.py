@@ -20,9 +20,10 @@ Dependencies (typical Debian package names):
   For --pgbench-perf-target server, non-root users need passwordless ``sudo -n``
   so ``perf -p`` can attach to postgres PIDs (or run the script as root).
   Remote DB: use ``--pgbench-perf-ssh user@db_host`` so ``perf -p`` runs on the
-  server over SSH (needs key-based or agent auth). SSH uses ``BatchMode=yes``, a connect
-  timeout, ``PreferredAuthentications=publickey``, ``NumberOfPasswordPrompts=0``, and
-  ``IdentitiesOnly=yes`` when ``-i`` is passed under ``--pgbench-perf-ssh-opts``.
+  server over SSH. Default is unattended **public-key** auth (``BatchMode``, etc.).
+  For **interactive password** use ``--pgbench-perf-ssh-password`` (``ssh -tt``) from a real
+  terminal. SSH uses a connect timeout and ``IdentitiesOnly=yes`` when ``-i`` is passed under
+  ``--pgbench-perf-ssh-opts``.
   If ``authorized_keys`` uses ``command=...``, it overrides the remote command and breaks
   perf capture (often seen as a dump of bash variables from a stray ``set``).
   The remote command uses a non-login bash (no profile/rc) so perf output is not mixed with
@@ -715,6 +716,7 @@ def run_with_perf_monitor_pids_remote_ssh(
     ssh_target: str,
     ssh_extra: list[str],
     remote_use_sudo: bool,
+    ssh_password_interactive: bool = False,
     timeout: Optional[float] = None,
     env: Optional[dict[str, str]] = None,
     counter_target: str = "postgres_server_ssh",
@@ -742,20 +744,25 @@ def run_with_perf_monitor_pids_remote_ssh(
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
-    ssh_trailer = [
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=25",
-        "-o",
-        "PreferredAuthentications=publickey",
-        "-o",
-        "NumberOfPasswordPrompts=0",
-    ]
+    if ssh_password_interactive:
+        ssh_trailer = ["-o", "ConnectTimeout=25"]
+        ssh_stdio = ["ssh", "-tt"]
+    else:
+        ssh_trailer = [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=25",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "NumberOfPasswordPrompts=0",
+        ]
+        ssh_stdio = ["ssh", "-T"]
     if "-i" in ssh_extra:
         ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
     ssh_cmd = (
-        ["ssh", "-T"]
+        ssh_stdio
         + list(ssh_extra)
         + ssh_trailer
         + [ssh_target, "bash", "--noprofile", "--norc", "-s"]
@@ -1008,12 +1015,12 @@ def main() -> None:
         metavar="USER@HOST",
         help=(
             "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
-            "SSH user@host (root not required). Appends -o BatchMode=yes -o ConnectTimeout=25 "
-            "-o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 "
-            "(and IdentitiesOnly=yes if -i is present in --pgbench-perf-ssh-opts) after your "
-            "ssh opts (openssh: first -o wins). On the server: perf must trace postgres PIDs "
-            "(NOPASSWD sudo for perf as non-root, or use --pgbench-perf-ssh-no-sudo; root@ "
-            "skips sudo on the remote side). The cluster OS user postgres often cannot SSH."
+            "SSH user@host (root not required). Default: unattended key-based auth (ssh -T): "
+            "appends BatchMode, publickey-only, password prompts off, ConnectTimeout, "
+            "IdentitiesOnly if -i is in --pgbench-perf-ssh-opts. Use --pgbench-perf-ssh-password "
+            "for interactive root/host password instead (ssh -tt). On the server: perf must "
+            "trace postgres PIDs (NOPASSWD sudo for perf as non-root, or "
+            "--pgbench-perf-ssh-no-sudo; root@ skips remote sudo wrap)."
         ),
     )
     ap.add_argument(
@@ -1021,6 +1028,15 @@ def main() -> None:
         default="",
         metavar="ARGS",
         help='Extra ssh arguments as one shell-quoted string (e.g. -i /path/key -p 2222).',
+    )
+    ap.add_argument(
+        "--pgbench-perf-ssh-password",
+        action="store_true",
+        help=(
+            "Allow SSH keyboard-interactive/password for remote perf (uses ssh -tt; run from a "
+            "real terminal). Omit -i unless you use a key; server must allow password auth and "
+            "PermitRootLogin must allow your login method. Not for CI/automation."
+        ),
     )
     ap.add_argument(
         "--pgbench-perf-ssh-no-sudo",
@@ -1284,6 +1300,13 @@ def main() -> None:
                     p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
                     code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
                 elif use_remote_ssh_perf:
+                    if args.pgbench_perf_ssh_password and not sys.stdin.isatty():
+                        print(
+                            "vm_benchmark: warning: --pgbench-perf-ssh-password expects an "
+                            "interactive terminal; ssh may not be able to read the password.",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                     print(
                         f"vm_benchmark: remote server perf: opening SSH to {perf_ssh_target!r} "
                         "(see --pgbench-perf-ssh / ssh BatchMode + timeouts), "
@@ -1297,6 +1320,7 @@ def main() -> None:
                             ssh_target=perf_ssh_target,
                             ssh_extra=perf_ssh_extra,
                             remote_use_sudo=not args.pgbench_perf_ssh_no_sudo,
+                            ssh_password_interactive=args.pgbench_perf_ssh_password,
                             timeout=to,
                             env=pg_env,
                         )
