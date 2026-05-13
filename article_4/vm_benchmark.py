@@ -724,9 +724,10 @@ def run_with_perf_monitor_pids_remote_ssh(
     """
     Run workload locally while ``perf stat -p $(pgrep -x postgres)`` runs on ``ssh_target``.
 
-    Remote command is sent on **stdin** to ``bash --noprofile --norc -s`` (not ``-c``), so a
-    nonstandard ``sshd``/wrapper is less likely to mangle or truncate the script into a bare
-    ``set`` (``BASH_EXECUTION_STRING=set`` in captured output).
+    Unattended (key) mode: send the remote script on **stdin** to ``bash -s`` so odd ssh
+    stacks are less likely to mangle ``-c``. Interactive password mode: if ``sys.stdin`` is
+    a TTY, use ``bash -c`` and **inherit stdin** so ssh can prompt; otherwise this cannot
+    work (no askpass / no tty) and we skip remote perf.
     """
     use_sudo_on_remote = remote_use_sudo and not _ssh_login_user_is_root(ssh_target)
     perf_inv = (
@@ -744,6 +745,19 @@ def run_with_perf_monitor_pids_remote_ssh(
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
+    if ssh_password_interactive and not sys.stdin.isatty():
+        print(
+            "pgbench (remote server perf): --pgbench-perf-ssh-password needs a real terminal "
+            "(stdin must be a TTY) so ssh can read the password; stdin is tied up when "
+            "running from a pipe or IDE. Use public-key auth instead, or run vm_benchmark "
+            "from an interactive shell. Running pgbench without remote perf.",
+            file=sys.stderr,
+            flush=True,
+        )
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+
+    use_stdin_for_remote_script = not (ssh_password_interactive and sys.stdin.isatty())
     if ssh_password_interactive:
         ssh_trailer = ["-o", "ConnectTimeout=25"]
         ssh_stdio = ["ssh", "-tt"]
@@ -761,22 +775,29 @@ def run_with_perf_monitor_pids_remote_ssh(
         ssh_stdio = ["ssh", "-T"]
     if "-i" in ssh_extra:
         ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
-    ssh_cmd = (
-        ssh_stdio
-        + list(ssh_extra)
-        + ssh_trailer
-        + [ssh_target, "bash", "--noprofile", "--norc", "-s"]
-    )
+    remote_argv: list[str]
+    if use_stdin_for_remote_script:
+        remote_argv = ["bash", "--noprofile", "--norc", "-s"]
+    else:
+        remote_argv = ["bash", "--noprofile", "--norc", "-c", remote_script]
+    ssh_cmd = ssh_stdio + list(ssh_extra) + ssh_trailer + [ssh_target] + remote_argv
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "env": env,
+    }
+    if use_stdin_for_remote_script:
+        popen_kwargs["stdin"] = subprocess.PIPE
+        popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["stdin"] = None
+        popen_kwargs["start_new_session"] = False
     try:
         perf_proc = subprocess.Popen(
             ssh_cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            env=env,
-            start_new_session=True,
+            **popen_kwargs,
         )
     except OSError as exc:
         print(
@@ -787,7 +808,7 @@ def run_with_perf_monitor_pids_remote_ssh(
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
 
-    if perf_proc.stdin:
+    if use_stdin_for_remote_script and perf_proc.stdin:
         try:
             perf_proc.stdin.write(remote_script + "\n")
             perf_proc.stdin.close()
@@ -1033,9 +1054,11 @@ def main() -> None:
         "--pgbench-perf-ssh-password",
         action="store_true",
         help=(
-            "Allow SSH keyboard-interactive/password for remote perf (uses ssh -tt; run from a "
-            "real terminal). Omit -i unless you use a key; server must allow password auth and "
-            "PermitRootLogin must allow your login method. Not for CI/automation."
+            "Allow SSH password for remote perf: ssh -tt with stdin inherited (so ssh does not "
+            "need ssh-askpass). Requires a real controlling TTY for this process (e.g. open "
+            "TTY, not piping stdin / some IDE runners). Then the remote script is passed via "
+            "bash -c. Omit -i unless you use a key. Server: PasswordAuthentication and "
+            "PermitRootLogin as needed. Not for CI."
         ),
     )
     ap.add_argument(
@@ -1300,13 +1323,6 @@ def main() -> None:
                     p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
                     code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
                 elif use_remote_ssh_perf:
-                    if args.pgbench_perf_ssh_password and not sys.stdin.isatty():
-                        print(
-                            "vm_benchmark: warning: --pgbench-perf-ssh-password expects an "
-                            "interactive terminal; ssh may not be able to read the password.",
-                            file=sys.stderr,
-                            flush=True,
-                        )
                     print(
                         f"vm_benchmark: remote server perf: opening SSH to {perf_ssh_target!r} "
                         "(see --pgbench-perf-ssh / ssh BatchMode + timeouts), "
