@@ -12,14 +12,18 @@ for socket/loopback ``--pg-host``, and for remote TCP the outbound NIC is inferr
 
 By default pgbench ``perf`` targets the **PostgreSQL server** only: local ``pgrep`` when
 ``--pg-host`` is a Unix socket or loopback TCP, or **SSH** to
-``{--pg-user or postgres}@<same host as TCP --pg-host>`` for other TCP hosts. Client needs
-``ssh``; if ``PGPASSWORD`` is set (``--pg-password`` / env), non-interactive SSH uses
-``sshpass`` when installed (same secret as the Unix login on the server). Optional
-``--pgbench-perf-ssh-opts`` passes extra ``ssh`` arguments (e.g. ``-i`` for a key).
-``--pgbench-perf-ssh-password`` forces interactive SSH password from a TTY.
-If ``authorized_keys`` uses ``command=...``, remote perf can break (shell ``set`` dumps).
-For ``sshpass``/non-interactive SSH, the remote monitor script is passed with ``bash -c``
-(argv), not via stdin to ``bash -s``, so perf counters are not lost to an empty stdin edge case.
+``{--pg-user or postgres}@<same host as TCP --pg-host>`` for other TCP hosts. **pgbench**
+always runs on the benchmark host; only **perf** runs on the DB host over SSH. Remote
+``perf stat`` writes to a **temporary file** on the DB server (``perf stat -o``); after the
+run the driver fetches that file with a second ``ssh`` (``cat``), so counters do not depend
+on piping ``perf`` output through the long-lived SSH session. Client needs ``ssh``; if
+``PGPASSWORD`` is set (``--pg-password`` / env), non-interactive SSH uses ``sshpass`` when
+installed (same secret as the Unix login on the server). Optional ``--pgbench-perf-ssh-opts``
+passes extra ``ssh`` arguments (e.g. ``-i`` for a key). ``--pgbench-perf-ssh-password`` forces
+interactive SSH password from a TTY. If ``authorized_keys`` uses ``command=...``, remote perf
+can break (shell ``set`` dumps). For ``sshpass``/non-interactive SSH, the remote monitor script
+is passed with ``bash -c`` (argv), not via stdin to ``bash -s``, so perf counters are not lost
+to an empty stdin edge case.
 
 Dependencies (typical Debian package names):
   postgresql, postgresql-client  ->  pg_isready, psql, pgbench (default path /usr/bin/pgbench)
@@ -309,6 +313,149 @@ def _pg_host_colocated_for_server_perf(host: str) -> bool:
     if not h or h in ("local", "unix"):
         return True
     return h in ("localhost", "127.0.0.1", "::1")
+
+
+REMOTE_PERF_OUT_MARKER = "__VM_BENCHMARK_PERF_OUT__"
+
+
+def _parse_remote_perf_marker_line(line: str) -> Optional[str]:
+    s = line.strip()
+    prefix = REMOTE_PERF_OUT_MARKER + " "
+    if s.startswith(prefix):
+        return s[len(prefix) :].strip() or None
+    return None
+
+
+def _read_remote_perf_path_from_ssh_stdout(
+    stream: Any,
+    perf_proc: subprocess.Popen[str],
+    *,
+    overall_timeout: float = 25.0,
+) -> tuple[Optional[str], str]:
+    """
+    Block until the remote shell prints ``REMOTE_PERF_OUT_MARKER <path>`` (one line),
+    the SSH process exits, or ``overall_timeout`` elapses.
+
+    Returns ``(remote_path, prefix_text)`` where ``prefix_text`` is everything read from
+    ``stream`` (including the marker line) for diagnostics if path is None.
+    """
+    deadline = time.time() + max(1.0, overall_timeout)
+    chunks: list[str] = []
+    while time.time() < deadline:
+        if perf_proc.poll() is not None:
+            break
+        if not stream:
+            time.sleep(0.05)
+            continue
+        try:
+            remaining = max(0.05, min(0.25, deadline - time.time()))
+            r, _, _ = select.select([stream], [], [], remaining)
+        except (ValueError, OSError, TypeError):
+            break
+        if not r:
+            continue
+        line = stream.readline()
+        if line == "":
+            try:
+                tail = stream.read()
+            except Exception:
+                tail = ""
+            chunks.append(tail)
+            break
+        chunks.append(line)
+        path = _parse_remote_perf_marker_line(line)
+        if path:
+            return path, "".join(chunks)
+    if stream:
+        try:
+            rest = stream.read()
+            if rest:
+                chunks.append(rest)
+        except Exception:
+            pass
+    return None, "".join(chunks)
+
+
+def _vm_benchmark_ssh_stdio_trailer(
+    ssh_extra: list[str],
+    *,
+    ssh_password_interactive: bool,
+    ssh_sshpass_password: Optional[str],
+) -> tuple[list[str], list[str], bool]:
+    """
+    Build ``ssh`` argv prefix and connection options for vm_benchmark (perf monitor or fetch).
+
+    Returns ``(stdio_prefix, trailer, use_sshpass)``. When ``use_sshpass`` is true, callers
+    must set ``SSHPASS`` in the environment for subprocesses.
+    """
+    use_sshpass = bool(ssh_sshpass_password)
+    if use_sshpass:
+        ssh_trailer = [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=25",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "PreferredAuthentications=password,keyboard-interactive",
+        ]
+        ssh_stdio = ["sshpass", "-e", "ssh", "-T"]
+    elif ssh_password_interactive:
+        ssh_trailer = ["-o", "ConnectTimeout=25"]
+        ssh_stdio = ["ssh", "-tt"]
+    else:
+        ssh_trailer = [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=25",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "NumberOfPasswordPrompts=0",
+        ]
+        ssh_stdio = ["ssh", "-T"]
+    if "-i" in ssh_extra and not use_sshpass:
+        ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
+    return ssh_stdio, ssh_trailer, use_sshpass
+
+
+def _vm_benchmark_ssh_run_remote_argv(
+    remote_argv: list[str],
+    *,
+    ssh_target: str,
+    ssh_extra: list[str],
+    ssh_password_interactive: bool,
+    ssh_sshpass_password: Optional[str],
+    env: Optional[dict[str, str]],
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``ssh_target`` with ``remote_argv`` as the remote command (no shell wrapper)."""
+    ssh_stdio, ssh_trailer, use_sshpass = _vm_benchmark_ssh_stdio_trailer(
+        list(ssh_extra),
+        ssh_password_interactive=ssh_password_interactive,
+        ssh_sshpass_password=ssh_sshpass_password,
+    )
+    cmd = ssh_stdio + list(ssh_extra) + ssh_trailer + [ssh_target] + remote_argv
+    run_env: dict[str, str]
+    if use_sshpass:
+        run_env = dict(env) if env is not None else os.environ.copy()
+        run_env["SSHPASS"] = ssh_sshpass_password  # type: ignore[assignment]
+    else:
+        run_env = env if env is not None else os.environ
+    stdin_spec: Any = None if ssh_password_interactive and not use_sshpass else subprocess.DEVNULL
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env=run_env,
+        stdin=stdin_spec,
+        check=False,
+    )
 
 
 def _ssh_capture_looks_like_forced_bash_set_dump(blob: str) -> bool:
@@ -761,16 +908,22 @@ def run_with_perf_monitor_pids_remote_ssh(
     """
     Run workload locally while ``perf stat -p $(pgrep -x postgres)`` runs on ``ssh_target``.
 
+    On the DB host, ``perf stat -o <tempfile>`` writes counter summaries to a temp file;
+    after the monitor stops, this host fetches that file with a separate ``ssh … cat`` so
+    metrics do not rely on piping ``perf`` output through the long-lived SSH session.
+
     Unattended (key) mode: send the remote script on **stdin** to ``bash -s``. Interactive
     password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + same string as
     ``SSHPASS`` (non-interactive; use with ``PGPASSWORD`` when the Unix login uses that secret).
     """
     perf_inv = (
-        "sudo -n -- perf stat -e duration_time,page-faults,context-switches "
+        "sudo -n -- perf stat -o \"$PF\" -e duration_time,page-faults,context-switches "
         '-B -p "$PIDS" -- sleep 86400'
     )
     remote_script = (
         "set -e; "
+        'PF=$(mktemp /tmp/vm_benchmark_remote_perf.XXXXXX 2>/dev/null || mktemp); '
+        f"echo {shlex.quote(REMOTE_PERF_OUT_MARKER)} \"$PF\"; "
         r'PIDS=$(pgrep -x postgres 2>/dev/null | tr "\n" "," | sed "s/,$//"); '
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
@@ -804,35 +957,11 @@ def run_with_perf_monitor_pids_remote_ssh(
     # ``BASH_EXECUTION_STRING=set``). Fall back to stdin only for very long scripts.
     _remote_script_stdin_fallback_bytes = 100_000
     use_stdin_for_remote_script = len(remote_script) > _remote_script_stdin_fallback_bytes
-    if use_sshpass:
-        ssh_trailer = [
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=25",
-            "-o",
-            "PubkeyAuthentication=no",
-            "-o",
-            "PreferredAuthentications=password,keyboard-interactive",
-        ]
-        ssh_stdio = ["sshpass", "-e", "ssh", "-T"]
-    elif ssh_password_interactive:
-        ssh_trailer = ["-o", "ConnectTimeout=25"]
-        ssh_stdio = ["ssh", "-tt"]
-    else:
-        ssh_trailer = [
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=25",
-            "-o",
-            "PreferredAuthentications=publickey",
-            "-o",
-            "NumberOfPasswordPrompts=0",
-        ]
-        ssh_stdio = ["ssh", "-T"]
-    if "-i" in ssh_extra and not use_sshpass:
-        ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
+    ssh_stdio, ssh_trailer, _ = _vm_benchmark_ssh_stdio_trailer(
+        list(ssh_extra),
+        ssh_password_interactive=ssh_password_interactive,
+        ssh_sshpass_password=ssh_sshpass_password if use_sshpass else None,
+    )
     remote_argv: list[str]
     if use_stdin_for_remote_script:
         remote_argv = ["bash", "--noprofile", "--norc", "-s"]
@@ -890,23 +1019,39 @@ def run_with_perf_monitor_pids_remote_ssh(
             p = _run_cmd(workload_cmd, timeout=timeout, env=env)
             return p.returncode, p.stdout, p.stderr, None
 
-    time.sleep(0.2)
-    if perf_proc.poll() is not None:
-        early = ""
-        if perf_proc.stdout:
-            try:
-                early = perf_proc.stdout.read()
-            except Exception:
-                pass
+    remote_perf_file, ssh_head = _read_remote_perf_path_from_ssh_stdout(
+        perf_proc.stdout,
+        perf_proc,
+        overall_timeout=25.0,
+    )
+    if not remote_perf_file:
+        tail = _stop_perf_monitor_and_read(perf_proc)
+        early = (ssh_head + tail)[:2400]
         print(
             "pgbench (remote server perf): could not start monitoring on DB host "
-            "(no postgres PIDs, ssh error, or perf/sudo failed). "
-            f"Remote output (first 800 chars): {early[:800]!r}",
+            "(no postgres PIDs, ssh error, or perf/sudo failed), or temp-file marker missing. "
+            f"Remote SSH stream (first 800 chars): {early[:800]!r}",
             file=sys.stderr,
             flush=True,
         )
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
+
+    time.sleep(0.15)
+    if perf_proc.poll() is not None:
+        tail = _stop_perf_monitor_and_read(perf_proc)
+        early = (ssh_head + tail)[:2400]
+        print(
+            "pgbench (remote server perf): SSH perf session ended before pgbench "
+            f"(no postgres PIDs, ssh error, or perf/sudo failed). First 800 chars: {early[:800]!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+
+    workload_timeout = float(timeout) if timeout is not None else 600.0
+    fetch_timeout = min(86400.0, max(120.0, workload_timeout + 120.0))
 
     try:
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
@@ -914,21 +1059,59 @@ def run_with_perf_monitor_pids_remote_ssh(
     finally:
         blob = _stop_perf_monitor_and_read(perf_proc)
 
-    perf_m = _parse_perf_stat(blob)
+    try:
+        cat_p = _vm_benchmark_ssh_run_remote_argv(
+            ["cat", remote_perf_file],
+            ssh_target=ssh_target,
+            ssh_extra=list(ssh_extra),
+            ssh_password_interactive=ssh_password_interactive,
+            ssh_sshpass_password=ssh_sshpass_password if use_sshpass else None,
+            env=env,
+            timeout=fetch_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        cat_p = None
+        file_blob = ""
+        print(
+            "pgbench (remote server perf): timed out reading remote perf file over ssh.",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        file_blob = (cat_p.stdout or "") + (cat_p.stderr or "")
+        if cat_p.returncode != 0:
+            print(
+                "pgbench (remote server perf): could not read remote perf file "
+                f"{remote_perf_file!r} over ssh (exit {cat_p.returncode}). "
+                f"stderr/stdout tail: {(file_blob or blob)[:600]!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+    _vm_benchmark_ssh_run_remote_argv(
+        ["rm", "-f", "--", remote_perf_file],
+        ssh_target=ssh_target,
+        ssh_extra=list(ssh_extra),
+        ssh_password_interactive=ssh_password_interactive,
+        ssh_sshpass_password=ssh_sshpass_password if use_sshpass else None,
+        env=env,
+        timeout=60.0,
+    )
+
+    perf_src = file_blob.strip() and file_blob or blob
+    perf_m = _parse_perf_stat(perf_src)
     perf_m.counter_target = counter_target
-    perf_m.raw_stderr = blob
+    perf_m.raw_stderr = perf_src
     if (
         perf_m.duration_sec is None
         and perf_m.page_faults is None
         and perf_m.context_switches is None
-        and _ssh_capture_looks_like_forced_bash_set_dump(blob)
+        and _ssh_capture_looks_like_forced_bash_set_dump(perf_src)
     ):
         print(
-            "pgbench (remote server perf): captured output looks like a bare bash 'set' dump, "
-            "not perf. Check the DB host: sshd_config ForceCommand / Match, "
+            "pgbench (remote server perf): perf data looks like a bare bash 'set' dump, "
+            "not perf stat. Check the DB host: sshd_config ForceCommand / Match, "
             "PAM/session hooks, or ~/.ssh/authorized_keys 'command=' (including other files "
-            "via AuthorizedKeysFile). Current vm_benchmark passes the monitor script with "
-            "`bash -c` (argv); stdin forwarding to `bash -s` is only used for very long scripts.",
+            "via AuthorizedKeysFile).",
             file=sys.stderr,
             flush=True,
         )
@@ -936,10 +1119,10 @@ def run_with_perf_monitor_pids_remote_ssh(
         perf_m.duration_sec is None
         and perf_m.page_faults is None
         and perf_m.context_switches is None
-        and not blob.strip()
+        and not perf_src.strip()
     ):
         print(
-            "pgbench (remote server perf): empty perf output. "
+            "pgbench (remote server perf): empty perf output after remote file fetch. "
             "On the DB host check perf, kernel.perf_event_paranoid, and sudo -n for perf.",
             file=sys.stderr,
             flush=True,
