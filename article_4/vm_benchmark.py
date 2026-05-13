@@ -18,6 +18,10 @@ By default pgbench ``perf`` targets the **PostgreSQL server** only: local ``pgre
 also read from ``~/.pgpass`` / ``PGPASSFILE`` when ``PGPASSWORD`` is unset). Optional
 ``--pgbench-perf-ssh-opts`` passes extra ``ssh`` arguments (e.g. ``-i`` for a key).
 ``--pgbench-perf-ssh-password`` forces interactive SSH password from a TTY.
+``--pgbench-on-db-host`` (remote TCP only) runs **pgbench and perf on the DB server**
+(``pgbench -h 127.0.0.1``), saves outputs in temp files there, and fetches them over one SSH
+session — different benchmark semantics (no client↔server network for pgbench).
+
 If ``authorized_keys`` uses ``command=...``, remote perf can break (shell ``set`` dumps).
 
 Dependencies (typical Debian package names):
@@ -54,6 +58,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
 import json
 import os
@@ -474,6 +479,27 @@ def _pg_conn_args(
     if db.strip():
         parts.extend(["-d", db.strip()])
     return parts
+
+
+def _remote_pgbench_argv_on_db_host(
+    pgbench_bin: str,
+    *,
+    clients: int,
+    jobs: int,
+    pgbench_transactions: Optional[int],
+    duration: Optional[int],
+    pg_port: int,
+    pg_user: str,
+    pg_database: str,
+) -> list[str]:
+    """``pgbench`` argv connecting to Postgres on the same machine (127.0.0.1)."""
+    cmd = [pgbench_bin, "-c", str(clients), "-j", str(jobs)]
+    if pgbench_transactions is not None:
+        cmd.extend(["-t", str(pgbench_transactions)])
+    else:
+        cmd.extend(["-T", str(duration if duration is not None else 30)])
+    cmd.extend(_pg_conn_args("127.0.0.1", pg_port, pg_user, pg_database))
+    return cmd
 
 
 def wait_postgres_ready(
@@ -920,18 +946,6 @@ def run_with_perf_monitor_pids_remote_ssh(
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
 
-    if ssh_password_interactive and not use_sshpass and not sys.stdin.isatty():
-        print(
-            "pgbench (remote server perf): --pgbench-perf-ssh-password needs a real terminal "
-            "(stdin must be a TTY) so ssh can read the password; stdin is tied up when "
-            "running from a pipe or IDE. Use public-key auth instead, or run vm_benchmark "
-            "from an interactive shell. Running pgbench without remote perf.",
-            file=sys.stderr,
-            flush=True,
-        )
-        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
-        return p.returncode, p.stdout, p.stderr, None
-
     if use_sshpass:
         # Do not set BatchMode=yes: it disables password/keyboard-interactive auth even when
         # sshpass supplies the secret (interactive SSH works, sshpass + BatchMode fails).
@@ -1078,6 +1092,155 @@ def run_with_perf_monitor_pids_remote_ssh(
             flush=True,
         )
     return rc, out, err, perf_m
+
+
+def _parse_remote_colocated_artifacts(blob: str) -> tuple[Optional[int], str, str]:
+    """Split SSH stdout from ``--pgbench-on-db-host`` into pgbench exit code, pgbench text, perf text."""
+    if "__VM_BENCH_PERF__" not in blob:
+        return None, (blob or "").strip(), ""
+    _, _, a = blob.partition("__VM_BENCH_PERF__")
+    perf_body, _, b = a.partition("__VM_BENCH_PGBENCH__")
+    pgb_body, _, c = b.partition("__VM_BENCH_RC__")
+    tail = c.strip()
+    rc: Optional[int] = int(tail) if tail.isdigit() else None
+    return rc, pgb_body.strip(), perf_body.strip()
+
+
+def run_pgbench_on_db_host_with_perf_ssh(
+    remote_pgbench_argv: list[str],
+    *,
+    ssh_target: str,
+    ssh_extra: list[str],
+    ssh_password_interactive: bool = False,
+    ssh_sshpass_password: Optional[str] = None,
+    pgpassword_for_remote: str,
+    timeout: Optional[float] = None,
+    env: Optional[dict[str, str]] = None,
+    counter_target: str = "postgres_server_ssh_coloc",
+) -> tuple[int, str, str, Optional[PerfMetrics]]:
+    """
+    On the DB host over SSH: start ``perf stat -o file``, run ``pgbench`` against
+    ``127.0.0.1``, stop perf, print markers and file contents to stdout.
+
+    Avoids piping perf through the SSH tty and matches “all work on the server” setups.
+    """
+    use_sshpass = bool(ssh_sshpass_password)
+    if use_sshpass and ssh_password_interactive:
+        print(
+            "pgbench (remote colocated): sshpass and interactive SSH password both set; skip.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2, "", "", None
+    if ssh_password_interactive and not use_sshpass and not sys.stdin.isatty():
+        print(
+            "pgbench (remote colocated): --pgbench-perf-ssh-password needs a TTY.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2, "", "", None
+
+    export_pw = ""
+    if pgpassword_for_remote.strip():
+        export_pw = f"export PGPASSWORD={shlex.quote(pgpassword_for_remote)}\n"
+
+    pgbench_sh = shlex.join(remote_pgbench_argv)
+    remote_body = (
+        "set -e\n"
+        + export_pw
+        + "TMPDIR=$(mktemp -d /tmp/vm_benchmark.XXXXXX)\n"
+        + "trap 'rm -rf \"$TMPDIR\"' EXIT\n"
+        + r"PIDS=$( (pgrep -x postgres; pgrep -x postmaster) 2>/dev/null | "
+        r'sort -u -n | tr "\n" "," | sed "s/,$//")' "\n"
+        + 'test -n "$PIDS"\n'
+        + 'sudo -n -- perf stat -o "$TMPDIR/perf.out"'
+        + " -e duration_time,page-faults,context-switches -B -p \"$PIDS\" "
+        + "-- sleep 86400 &\n"
+        + "PERF_PID=$!\n"
+        + "sleep 0.3\n"
+        + "set +e\n"
+        + f"{pgbench_sh} >\"$TMPDIR/pgbench.out\" 2>&1\n"
+        + "RC=$?\n"
+        + "set -e\n"
+        + 'kill -INT "$PERF_PID" 2>/dev/null || true\n'
+        + 'wait "$PERF_PID" 2>/dev/null || true\n'
+        + "printf '%s\\n' __VM_BENCH_PERF__\n"
+        + 'cat "$TMPDIR/perf.out"\n'
+        + "printf '%s\\n' __VM_BENCH_PGBENCH__\n"
+        + 'cat "$TMPDIR/pgbench.out"\n'
+        + "printf '%s\\n' __VM_BENCH_RC__\n"
+        + 'echo "$RC"\n'
+    )
+    b64 = base64.b64encode(remote_body.encode("utf-8")).decode("ascii")
+    remote_inv = f"echo {b64} | base64 -d | bash"
+
+    if use_sshpass:
+        ssh_trailer = [
+            "-o",
+            "ConnectTimeout=25",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "PreferredAuthentications=password,keyboard-interactive",
+        ]
+        ssh_stdio = ["sshpass", "-e", "ssh", "-tt"]
+    elif ssh_password_interactive:
+        ssh_trailer = ["-o", "ConnectTimeout=25"]
+        ssh_stdio = ["ssh", "-tt"]
+    else:
+        ssh_trailer = [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=25",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "NumberOfPasswordPrompts=0",
+        ]
+        ssh_stdio = ["ssh", "-tt"]
+    if "-i" in ssh_extra and not use_sshpass:
+        ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
+
+    ssh_cmd = (
+        ssh_stdio
+        + list(ssh_extra)
+        + ssh_trailer
+        + [ssh_target, "bash", "--noprofile", "--norc", "-c", remote_inv]
+    )
+    if use_sshpass:
+        popen_env: dict[str, str] = dict(env) if env is not None else os.environ.copy()
+        popen_env["SSHPASS"] = ssh_sshpass_password  # type: ignore[assignment]
+    else:
+        popen_env = dict(env) if env is not None else os.environ.copy()
+
+    try:
+        proc = _run_cmd(ssh_cmd, timeout=timeout, env=popen_env)
+    except subprocess.TimeoutExpired:
+        print(
+            "pgbench (remote colocated): SSH session timed out.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 124, "", "ssh timeout", None
+
+    blob = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    rc_pg, pgb_text, perf_text = _parse_remote_colocated_artifacts(blob)
+    if not perf_text.strip():
+        print(
+            f"pgbench (remote colocated): no perf capture (SSH exit {proc.returncode}); "
+            f"raw (first 700 chars): {blob[:700]!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        out_all = pgb_text if pgb_text else blob
+        return proc.returncode, out_all, "", None
+
+    exit_for_json = rc_pg if rc_pg is not None else proc.returncode
+    perf_m = _parse_perf_stat(perf_text)
+    perf_m.counter_target = counter_target
+    perf_m.raw_stderr = perf_text
+    return exit_for_json, pgb_text, "", perf_m
 
 
 class NativeStressController:
@@ -1238,6 +1401,22 @@ def main() -> None:
         ),
     )
     ap.add_argument(
+        "--pgbench-on-db-host",
+        action="store_true",
+        help=(
+            "For remote TCP --pg-host only: run pgbench against 127.0.0.1 on the DB server "
+            "together with perf there; results are written to temp files and fetched over SSH. "
+            "Load is generated on the DB host (not from the benchmark client over the network). "
+            "Use --remote-pgbench-binary if the server pgbench path differs."
+        ),
+    )
+    ap.add_argument(
+        "--remote-pgbench-binary",
+        default="/usr/bin/pgbench",
+        metavar="PATH",
+        help="Path to pgbench on the DB host when using --pgbench-on-db-host (default: /usr/bin/pgbench).",
+    )
+    ap.add_argument(
         "--no-stress",
         action="store_true",
         help="Do not run stress-ng (all load levels run with 0%% background load).",
@@ -1302,6 +1481,15 @@ def main() -> None:
             "(pgbench uses -t only, no -T).",
             file=sys.stderr,
         )
+
+    if args.pgbench_on_db_host:
+        if not _use_tcp(args.pg_host) or _pg_host_colocated_for_server_perf(args.pg_host):
+            print(
+                "--pgbench-on-db-host only applies to remote TCP --pg-host "
+                "(not local, unix socket, or loopback).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     linpack_path = os.path.abspath(args.linpack_binary)
     if not os.path.isfile(linpack_path) or not os.access(linpack_path, os.X_OK):
@@ -1539,6 +1727,42 @@ def main() -> None:
                 if args.no_perf:
                     p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
                     code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
+                elif use_remote_ssh_perf and args.pgbench_on_db_host:
+                    rpb = (args.remote_pgbench_binary or "").strip() or "/usr/bin/pgbench"
+                    print(
+                        f"vm_benchmark: pgbench+perf on DB host via SSH {perf_ssh_target!r} "
+                        f"(remote {rpb!r}, --pgbench-on-db-host).",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    ra = _remote_pgbench_argv_on_db_host(
+                        rpb,
+                        clients=args.clients,
+                        jobs=args.jobs,
+                        pgbench_transactions=args.pgbench_transactions,
+                        duration=args.duration,
+                        pg_port=args.pg_port,
+                        pg_user=args.pg_user,
+                        pg_database=args.pg_database,
+                    )
+                    try:
+                        code, out, err, perf_m = run_pgbench_on_db_host_with_perf_ssh(
+                            ra,
+                            ssh_target=perf_ssh_target,
+                            ssh_extra=perf_ssh_extra,
+                            ssh_password_interactive=args.pgbench_perf_ssh_password,
+                            ssh_sshpass_password=ssh_sshpass_pw,
+                            pgpassword_for_remote=(pg_env.get("PGPASSWORD") or ""),
+                            timeout=to,
+                            env=pg_env,
+                        )
+                    except OSError as exc:
+                        print(
+                            f"pgbench: remote colocated pgbench+perf failed ({exc}); "
+                            "skipping pgbench phase metrics.",
+                            file=sys.stderr,
+                        )
+                        code, out, err, perf_m = 1, "", str(exc), None
                 elif use_remote_ssh_perf:
                     print(
                         f"vm_benchmark: remote server perf: opening SSH to {perf_ssh_target!r} "
