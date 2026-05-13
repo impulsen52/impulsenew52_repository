@@ -21,7 +21,10 @@ Dependencies (typical Debian package names):
   so ``perf -p`` can attach to postgres PIDs (or run the script as root).
   Remote DB: use ``--pgbench-perf-ssh user@db_host`` so ``perf -p`` runs on the
   server over SSH (needs key-based or agent auth). SSH uses ``BatchMode=yes``, a connect
-  timeout, and ``IdentitiesOnly=yes`` when ``-i`` is passed under ``--pgbench-perf-ssh-opts``.
+  timeout, ``PreferredAuthentications=publickey``, ``NumberOfPasswordPrompts=0``, and
+  ``IdentitiesOnly=yes`` when ``-i`` is passed under ``--pgbench-perf-ssh-opts``.
+  If ``authorized_keys`` uses ``command=...``, it overrides the remote command and breaks
+  perf capture (often seen as a dump of bash variables from a stray ``set``).
   The remote command uses a non-login bash (no profile/rc) so perf output is not mixed with
   shell startup noise. Non-root SSH users usually need passwordless ``sudo -n`` for
   ``perf`` on the server, or ``--pgbench-perf-ssh-no-sudo`` when policy allows; for
@@ -272,6 +275,13 @@ def _ssh_login_user_is_root(ssh_target: str) -> bool:
         return False
     user, _, _ = t.partition("@")
     return user == "root"
+
+
+def _ssh_capture_looks_like_forced_bash_set_dump(blob: str) -> bool:
+    """Heuristic: ssh authorized_keys command= forced a bare ``set`` or similar, not perf."""
+    if "Performance counter stats" in blob:
+        return False
+    return "BASH_EXECUTION_STRING=" in blob and "which ()" in blob
 
 
 def _native_postgres_host_pids() -> list[int]:
@@ -731,7 +741,16 @@ def run_with_perf_monitor_pids_remote_ssh(
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
-    ssh_trailer = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=25"]
+    ssh_trailer = [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=25",
+        "-o",
+        "PreferredAuthentications=publickey",
+        "-o",
+        "NumberOfPasswordPrompts=0",
+    ]
     if "-i" in ssh_extra:
         ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
     ssh_cmd = (
@@ -785,6 +804,21 @@ def run_with_perf_monitor_pids_remote_ssh(
     perf_m = _parse_perf_stat(blob)
     perf_m.counter_target = counter_target
     perf_m.raw_stderr = blob
+    if (
+        perf_m.duration_sec is None
+        and perf_m.page_faults is None
+        and perf_m.context_switches is None
+        and _ssh_capture_looks_like_forced_bash_set_dump(blob)
+    ):
+        print(
+            "pgbench (remote server perf): captured output looks like a bare bash 'set' dump, "
+            "not perf. On the DB host, check ~/.ssh/authorized_keys for this key: a "
+            "'command=...' option overrides the remote command (often a typo or bad paste). "
+            "Remove forced command or use a key without it; advanced setups can wrap "
+            "$SSH_ORIGINAL_COMMAND per OpenSSH docs.",
+            file=sys.stderr,
+            flush=True,
+        )
     if (
         perf_m.duration_sec is None
         and perf_m.page_faults is None
@@ -957,6 +991,7 @@ def main() -> None:
         help=(
             "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
             "SSH user@host (root not required). Appends -o BatchMode=yes -o ConnectTimeout=25 "
+            "-o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 "
             "(and IdentitiesOnly=yes if -i is present in --pgbench-perf-ssh-opts) after your "
             "ssh opts (openssh: first -o wins). On the server: perf must trace postgres PIDs "
             "(NOPASSWD sudo for perf as non-root, or use --pgbench-perf-ssh-no-sudo; root@ "
