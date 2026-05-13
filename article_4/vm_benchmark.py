@@ -18,6 +18,8 @@ By default pgbench ``perf`` targets the **PostgreSQL server** only: local ``pgre
 ``--pgbench-perf-ssh-opts`` passes extra ``ssh`` arguments (e.g. ``-i`` for a key).
 ``--pgbench-perf-ssh-password`` forces interactive SSH password from a TTY.
 If ``authorized_keys`` uses ``command=...``, remote perf can break (shell ``set`` dumps).
+For ``sshpass``/non-interactive SSH, the remote monitor script is passed with ``bash -c``
+(argv), not via stdin to ``bash -s``, so perf counters are not lost to an empty stdin edge case.
 
 Dependencies (typical Debian package names):
   postgresql, postgresql-client  ->  pg_isready, psql, pgbench (default path /usr/bin/pgbench)
@@ -313,6 +315,10 @@ def _ssh_capture_looks_like_forced_bash_set_dump(blob: str) -> bool:
     """Heuristic: remote ran bare bash ``set`` (dump of env/functions), not ``perf stat``."""
     if "Performance counter stats" in blob:
         return False
+    # `bash -c set` / forced-command failures often set BASH_EXECUTION_STRING=set exactly.
+    if re.search(r"^BASH_EXECUTION_STRING=set\s*$", blob, re.MULTILINE):
+        return True
+    # Full `set` output in an interactive shell usually includes bash function defs.
     return "BASH_EXECUTION_STRING=" in blob and "which ()" in blob
 
 
@@ -792,9 +798,12 @@ def run_with_perf_monitor_pids_remote_ssh(
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
 
-    use_stdin_for_remote_script = (
-        use_sshpass or not (ssh_password_interactive and sys.stdin.isatty())
-    )
+    # Prefer ``bash -c SCRIPT`` (script in argv) over piping to ``bash -s``. With
+    # ``sshpass``/``-T``, forwarding our written stdin to the remote ``bash -s`` is
+    # unreliable on some systems (empty stdin → remote runs a bare ``set``, dumping env;
+    # ``BASH_EXECUTION_STRING=set``). Fall back to stdin only for very long scripts.
+    _remote_script_stdin_fallback_bytes = 100_000
+    use_stdin_for_remote_script = len(remote_script) > _remote_script_stdin_fallback_bytes
     if use_sshpass:
         ssh_trailer = [
             "-o",
@@ -845,8 +854,12 @@ def run_with_perf_monitor_pids_remote_ssh(
     if use_stdin_for_remote_script:
         popen_kwargs["stdin"] = subprocess.PIPE
         popen_kwargs["start_new_session"] = True
-    else:
+    elif ssh_password_interactive and not use_sshpass:
+        # Let ssh read a keyboard-interactive password from the invoking TTY if needed.
         popen_kwargs["stdin"] = None
+        popen_kwargs["start_new_session"] = False
+    else:
+        popen_kwargs["stdin"] = subprocess.DEVNULL
         popen_kwargs["start_new_session"] = False
     try:
         perf_proc = subprocess.Popen(
@@ -914,8 +927,8 @@ def run_with_perf_monitor_pids_remote_ssh(
             "pgbench (remote server perf): captured output looks like a bare bash 'set' dump, "
             "not perf. Check the DB host: sshd_config ForceCommand / Match, "
             "PAM/session hooks, or ~/.ssh/authorized_keys 'command=' (including other files "
-            "via AuthorizedKeysFile). Also ensure you run a current vm_benchmark that sends "
-            "the remote script via stdin (bash -s), not a truncated '-c' argument.",
+            "via AuthorizedKeysFile). Current vm_benchmark passes the monitor script with "
+            "`bash -c` (argv); stdin forwarding to `bash -s` is only used for very long scripts.",
             file=sys.stderr,
             flush=True,
         )
