@@ -125,7 +125,8 @@ def emit_text(data: dict[str, Any], *, source: Optional[Path] = None) -> str:
     meta = [
         f"source: {source.resolve()}" if source else "source: (stdin or unknown)",
         f"environment: {data.get('environment', '')}",
-        f"pgbench_run_duration_sec: {data.get('duration_sec', '')}",
+        f"pgbench_run_duration_sec (-T): {data.get('duration_sec', '')}",
+        f"pgbench_transactions_per_client (-t): {data.get('pgbench_transactions_per_client', '')}",
         f"load_levels: {data.get('load_levels', [])}",
     ]
     chunks.append("\n".join(meta) + "\n")

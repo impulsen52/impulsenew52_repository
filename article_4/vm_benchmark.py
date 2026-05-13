@@ -22,7 +22,7 @@ PostgreSQL note: pgbench -i creates pgbench tables inside an existing database; 
 script never runs CREATE DATABASE. Empty --pg-user / --pg-database means libpq defaults
 (OS user name, default database). Use --pg-host local to omit -h/-p (Unix socket).
 Use --skip-pgbench-init if you already ran pgbench -i. Defaults: -c 80 -j 8, -T from
---duration.
+--duration, or use --pgbench-transactions for -t (per-client transaction count).
 
 By default pgbench is run as OS user postgres: sudo -E -u postgres -- pgbench ...
 (peer auth). Use --pgbench-no-sudo to run pgbench as the invoking user, or
@@ -95,6 +95,7 @@ class BenchReport:
     rows: list[dict[str, Any]] = field(default_factory=list)
     linpack_docker_env: dict[str, str] = field(default_factory=dict)
     linpack_process_env: dict[str, str] = field(default_factory=dict)
+    pgbench_transactions_per_client: Optional[int] = None
 
 
 def _run_cmd(
@@ -512,7 +513,7 @@ class NativeStressController:
 
 
 def report_to_json(report: BenchReport) -> str:
-    d = {
+    d: dict[str, Any] = {
         "environment": report.environment,
         "duration_sec": report.duration_sec,
         "load_levels": report.load_levels,
@@ -520,12 +521,29 @@ def report_to_json(report: BenchReport) -> str:
         "linpack_docker_env": report.linpack_docker_env,
         "linpack_process_env": report.linpack_process_env,
     }
+    if report.pgbench_transactions_per_client is not None:
+        d["pgbench_transactions_per_client"] = report.pgbench_transactions_per_client
     return json.dumps(d, indent=2)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--duration", type=int, default=30, help="pgbench -T seconds")
+    ap.add_argument(
+        "--duration",
+        type=int,
+        default=30,
+        help="pgbench -T seconds (ignored if --pgbench-transactions is set)",
+    )
+    ap.add_argument(
+        "--pgbench-transactions",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "pgbench -t: each client runs N transactions (mutually exclusive with -T; "
+            "when set, --duration is not passed to pgbench)"
+        ),
+    )
     ap.add_argument(
         "--pg-host",
         default="localhost",
@@ -647,6 +665,10 @@ def main() -> None:
         print("--linpack-array-size must be >= 10", file=sys.stderr)
         sys.exit(2)
 
+    if args.pgbench_transactions is not None and args.pgbench_transactions < 1:
+        print("--pgbench-transactions must be >= 1", file=sys.stderr)
+        sys.exit(2)
+
     linpack_path = os.path.abspath(args.linpack_binary)
     if not os.path.isfile(linpack_path) or not os.access(linpack_path, os.X_OK):
         print(f"Not an executable file: {linpack_path!r}", file=sys.stderr)
@@ -748,22 +770,33 @@ def main() -> None:
         duration_sec=args.duration,
         load_levels=list(load_levels),
         linpack_process_env=dict(linpack_env_map),
+        pgbench_transactions_per_client=args.pgbench_transactions,
     )
     stress = NativeStressController()
 
     def _pgbench_cmd() -> list[str]:
-        return [
+        cmd = [
             pgbench_path,
             "-c",
             str(args.clients),
             "-j",
             str(args.jobs),
-            "-T",
-            str(args.duration),
-            *_pg_conn_args(
-                args.pg_host, args.pg_port, args.pg_user, args.pg_database
-            ),
         ]
+        if args.pgbench_transactions is not None:
+            cmd.extend(["-t", str(args.pgbench_transactions)])
+        else:
+            cmd.extend(["-T", str(args.duration)])
+        cmd.extend(
+            _pg_conn_args(args.pg_host, args.pg_port, args.pg_user, args.pg_database)
+        )
+        return cmd
+
+    def _pgbench_timeout_sec() -> float:
+        if args.pgbench_transactions is None:
+            return float(args.duration) + 120.0
+        c = max(1, args.clients)
+        t = max(1, args.pgbench_transactions)
+        return max(300.0, min(86400.0, float(t) * float(c) * 0.02 + 120.0))
 
     pgbench_sudo_prefix: Optional[list[str]] = (
         ["sudo", "-E", "-u", pgbench_os_user, "--"] if pgbench_os_user else None
@@ -782,7 +815,7 @@ def main() -> None:
                 code, out, err, perf_m = run_with_perf(
                     _pgbench_cmd(),
                     use_perf=not args.no_perf,
-                    timeout=float(args.duration) + 120,
+                    timeout=_pgbench_timeout_sec(),
                     env=pg_env,
                     prefix_cmd=pgbench_sudo_prefix,
                 )

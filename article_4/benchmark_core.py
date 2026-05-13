@@ -72,6 +72,8 @@ class BenchReport:
     load_levels: list[int] = field(default_factory=list)
     rows: list[dict[str, Any]] = field(default_factory=list)
     linpack_docker_env: dict[str, str] = field(default_factory=dict)
+    #: When set, pgbench used ``-t`` (transactions per client), not ``-T``.
+    pgbench_transactions_per_client: Optional[int] = None
 
 
 def _net_iface_exists(iface: str) -> bool:
@@ -495,6 +497,21 @@ class StressController:
         self._name = None
 
 
+def _pgbench_run_timeout_sec(
+    *,
+    duration: int,
+    transactions: Optional[int],
+    clients: int,
+) -> float:
+    """Wall-clock cap for pgbench under perf (``-T`` vs ``-t``)."""
+    if transactions is None:
+        return float(duration) + 120.0
+    c = max(1, clients)
+    t = max(1, transactions)
+    # Parallel clients; scale with work; clamp to avoid hangs vs absurd waits.
+    return max(300.0, min(86400.0, float(t) * float(c) * 0.02 + 120.0))
+
+
 def run_pgbench_iter(
     container: str,
     duration: int,
@@ -505,30 +522,31 @@ def run_pgbench_iter(
     jobs: int = DEFAULT_PGBENCH_JOBS,
     use_perf: bool = True,
     exec_env: Optional[dict[str, str]] = None,
+    transactions: Optional[int] = None,
 ) -> tuple[Optional[float], Optional[PerfMetrics], str, str, Optional[str], int]:
-    base = _docker_exec_cmd(
-        container,
-        [
-            "pgbench",
-            "-h",
-            pg_host.strip(),
-            "-p",
-            str(pg_port),
-            "-U",
-            "postgres",
-            "-c",
-            str(clients),
-            "-j",
-            str(jobs),
-            "-T",
-            str(duration),
-            "benchmark",
-        ],
-        exec_env=exec_env,
+    bench_args: list[str] = [
+        "pgbench",
+        "-h",
+        pg_host.strip(),
+        "-p",
+        str(pg_port),
+        "-U",
+        "postgres",
+        "-c",
+        str(clients),
+        "-j",
+        str(jobs),
+    ]
+    if transactions is not None:
+        bench_args.extend(["-t", str(transactions)])
+    else:
+        bench_args.extend(["-T", str(duration)])
+    bench_args.append("benchmark")
+    base = _docker_exec_cmd(container, bench_args, exec_env=exec_env)
+    timeout = _pgbench_run_timeout_sec(
+        duration=duration, transactions=transactions, clients=clients
     )
-    code, out, err, perf_m = run_with_perf(
-        base, use_perf=use_perf, timeout=float(duration) + 120
-    )
+    code, out, err, perf_m = run_with_perf(base, use_perf=use_perf, timeout=timeout)
     tps = parse_pgbench_tps(out + err)
     err_msg = None if code == 0 else f"pgbench exit {code}"
     return tps, perf_m, out, err, err_msg, code
@@ -606,6 +624,7 @@ def run_sequential_suite(
     pg_host: str = "localhost",
     pg_port: int = 5432,
     docker_pg_exec_env: Optional[dict[str, str]] = None,
+    pgbench_transactions: Optional[int] = None,
 ) -> BenchReport:
     levels = list(load_levels)
     linpack_env = build_linpack_run_env(
@@ -617,6 +636,7 @@ def run_sequential_suite(
         duration_sec=duration,
         load_levels=levels,
         linpack_docker_env=dict(linpack_env),
+        pgbench_transactions_per_client=pgbench_transactions,
     )
     stress = StressController(image=stress_image)
     if network_iface and not _net_iface_exists(network_iface):
@@ -642,6 +662,7 @@ def run_sequential_suite(
                     pg_host=pg_host,
                     pg_port=pg_port,
                     exec_env=docker_pg_exec_env,
+                    transactions=pgbench_transactions,
                 )
                 if network_iface:
                     t1 = time.time()
@@ -749,11 +770,13 @@ def ensure_postgres_container(
 
 
 def report_to_json(report: BenchReport) -> str:
-    d = {
+    d: dict[str, Any] = {
         "environment": report.environment,
         "duration_sec": report.duration_sec,
         "load_levels": report.load_levels,
         "rows": report.rows,
         "linpack_docker_env": report.linpack_docker_env,
     }
+    if report.pgbench_transactions_per_client is not None:
+        d["pgbench_transactions_per_client"] = report.pgbench_transactions_per_client
     return json.dumps(d, indent=2)

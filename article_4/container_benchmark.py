@@ -41,7 +41,17 @@ def main() -> None:
         "--duration",
         type=int,
         default=30,
-        help="pgbench -T duration in seconds (default 30)",
+        help="pgbench -T duration in seconds (default 30); ignored if --pgbench-transactions is set",
+    )
+    parser.add_argument(
+        "--pgbench-transactions",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "pgbench -t: run each client for N transactions (mutually exclusive with -T; "
+            "when set, --duration is not passed to pgbench)"
+        ),
     )
     parser.add_argument(
         "--pg-container",
@@ -137,6 +147,10 @@ def main() -> None:
         print("--linpack-array-size must be >= 10", file=sys.stderr)
         sys.exit(2)
 
+    if args.pgbench_transactions is not None and args.pgbench_transactions < 1:
+        print("--pgbench-transactions must be >= 1", file=sys.stderr)
+        sys.exit(2)
+
     docker_ok, docker_err = docker_check()
     if not docker_ok:
         print("Docker is not available or not running.", file=sys.stderr)
@@ -197,6 +211,7 @@ def main() -> None:
         pg_host=args.pg_host,
         pg_port=args.pg_port,
         docker_pg_exec_env=docker_pg_exec_env,
+        pgbench_transactions=args.pgbench_transactions,
     )
     text = report_to_json(report)
     if args.output:
