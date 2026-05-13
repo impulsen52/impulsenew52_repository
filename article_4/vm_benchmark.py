@@ -922,13 +922,25 @@ def run_with_perf_monitor_pids_remote_ssh(
         "sudo -n -- perf stat -o \"$PF\" -e duration_time,page-faults,context-switches "
         '-B -p "$PIDS" -- sleep 86400'
     )
+    # Non-login SSH (e.g. RED OS) often has a minimal PATH; ``pgrep`` may be missing or
+    # see no processes. Collect postgres/postmaster PIDs via pgrep and pidof fallbacks.
     remote_script = (
-        "set -e; "
-        'PF=$(mktemp /tmp/vm_benchmark_remote_perf.XXXXXX 2>/dev/null || mktemp); '
-        f"echo {shlex.quote(REMOTE_PERF_OUT_MARKER)} \"$PF\"; "
-        r'PIDS=$(pgrep -x postgres 2>/dev/null | tr "\n" "," | sed "s/,$//"); '
-        'test -n "$PIDS" || exit 3; '
-        "exec " + perf_inv
+        "set -e\n"
+        'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"\n'
+        "PF=$(mktemp /tmp/vm_benchmark_remote_perf.XXXXXX 2>/dev/null || mktemp)\n"
+        f"echo {shlex.quote(REMOTE_PERF_OUT_MARKER)} \"$PF\"\n"
+        "PIDS=$( {\n"
+        "  pgrep -x postgres 2>/dev/null || true\n"
+        "  pgrep -x postmaster 2>/dev/null || true\n"
+        "  command -v pidof >/dev/null 2>&1 && pidof postgres 2>/dev/null | "
+        "awk '{for(i=1;i<=NF;i++)print $i}' || true\n"
+        "  command -v pidof >/dev/null 2>&1 && pidof postmaster 2>/dev/null | "
+        "awk '{for(i=1;i<=NF;i++)print $i}' || true\n"
+        "} | grep -E '^[0-9]+$' | sort -u | paste -sd, - 2>/dev/null | sed 's/,$//' )\n"
+        'if test -z "$PIDS"; then echo "vm_benchmark_remote: no postgres/postmaster PIDs '
+        '(pgrep/pidof); check PATH, hidepid=, or process names on the DB host." >&2; '
+        "exit 3; fi\n"
+        "exec " + perf_inv + "\n"
     )
     use_sshpass = bool(ssh_sshpass_password)
     if use_sshpass and ssh_password_interactive:
@@ -1053,7 +1065,9 @@ def run_with_perf_monitor_pids_remote_ssh(
         early = (ssh_head + tail)[:2400]
         print(
             "pgbench (remote server perf): SSH perf session ended before pgbench "
-            f"(no postgres PIDs, ssh error, or perf/sudo failed). First 800 chars: {early[:800]!r}",
+            "(no postgres/postmaster PIDs after marker, ssh error, or perf/sudo failed; "
+            "on RED OS check non-login SSH PATH, hidepid=, and stderr below). "
+            f"First 800 chars: {early[:800]!r}",
             file=sys.stderr,
             flush=True,
         )
