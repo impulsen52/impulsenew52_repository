@@ -919,9 +919,9 @@ def run_with_perf_monitor_pids_remote_ssh(
         use_sshpass or not (ssh_password_interactive and sys.stdin.isatty())
     )
     if use_sshpass:
+        # Do not set BatchMode=yes: it disables password/keyboard-interactive auth even when
+        # sshpass supplies the secret (interactive SSH works, sshpass + BatchMode fails).
         ssh_trailer = [
-            "-o",
-            "BatchMode=yes",
             "-o",
             "ConnectTimeout=25",
             "-o",
