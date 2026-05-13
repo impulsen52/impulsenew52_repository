@@ -21,9 +21,10 @@ Dependencies (typical Debian package names):
   so ``perf -p`` can attach to postgres PIDs (or run the script as root).
   Remote DB: use ``--pgbench-perf-ssh user@db_host`` so ``perf -p`` runs on the
   server over SSH. Default is unattended **public-key** auth (``BatchMode``, etc.).
-  For **interactive password** use ``--pgbench-perf-ssh-password`` (``ssh -tt``) from a real
-  terminal. SSH uses a connect timeout and ``IdentitiesOnly=yes`` when ``-i`` is passed under
-  ``--pgbench-perf-ssh-opts``.
+  For **non-interactive** SSH password the same as the DB role, use
+  ``--pgbench-perf-ssh-use-pg-password`` with ``--pg-password`` / ``PGPASSWORD`` (needs
+  ``sshpass`` on the client; SSH user must use the same secret as ``PGPASSWORD``).
+  For **interactive** SSH password use ``--pgbench-perf-ssh-password`` (``ssh -tt`` from a TTY).
   If ``authorized_keys`` uses ``command=...``, it overrides the remote command and breaks
   perf capture (often seen as a dump of bash variables from a stray ``set``).
   The remote command uses a non-login bash (no profile/rc) so perf output is not mixed with
@@ -52,8 +53,9 @@ Examples:
   python3 vm_benchmark.py --duration 30 --pg-host local --linpack-binary /path/to/linpack
   python3 vm_benchmark.py --duration 30 --pg-user postgres --pg-database mydb
       --pg-password secret --linpack-binary /path/to/linpack -o out.json
-  python3 vm_benchmark.py ... --pg-host 192.168.122.10 --pgbench-perf-ssh bench@192.168.122.10
-      --linpack-binary /path/to/linpack -o remote.json
+  python3 vm_benchmark.py ... --pg-host 192.168.122.10 --pg-user postgres
+      --pg-password SECRET --pgbench-perf-ssh postgres@192.168.122.10
+      --pgbench-perf-ssh-use-pg-password --linpack-binary /path/to/linpack -o remote.json
 """
 from __future__ import annotations
 
@@ -63,6 +65,7 @@ import os
 import re
 import shlex
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -710,6 +713,7 @@ def run_with_perf_monitor_pids_remote_ssh(
     ssh_extra: list[str],
     remote_use_sudo: bool,
     ssh_password_interactive: bool = False,
+    ssh_sshpass_password: Optional[str] = None,
     timeout: Optional[float] = None,
     env: Optional[dict[str, str]] = None,
     counter_target: str = "postgres_server_ssh",
@@ -717,10 +721,9 @@ def run_with_perf_monitor_pids_remote_ssh(
     """
     Run workload locally while ``perf stat -p $(pgrep -x postgres)`` runs on ``ssh_target``.
 
-    Unattended (key) mode: send the remote script on **stdin** to ``bash -s`` so odd ssh
-    stacks are less likely to mangle ``-c``. Interactive password mode: if ``sys.stdin`` is
-    a TTY, use ``bash -c`` and **inherit stdin** so ssh can prompt; otherwise this cannot
-    work (no askpass / no tty) and we skip remote perf.
+    Unattended (key) mode: send the remote script on **stdin** to ``bash -s``. Interactive
+    password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + same string as
+    ``SSHPASS`` (non-interactive; use with ``PGPASSWORD`` when the Unix login uses that secret).
     """
     use_sudo_on_remote = remote_use_sudo
     perf_inv = (
@@ -738,7 +741,18 @@ def run_with_perf_monitor_pids_remote_ssh(
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
-    if ssh_password_interactive and not sys.stdin.isatty():
+    use_sshpass = bool(ssh_sshpass_password)
+    if use_sshpass and ssh_password_interactive:
+        print(
+            "pgbench (remote server perf): internal error: sshpass and interactive "
+            "password both set; skipping remote perf.",
+            file=sys.stderr,
+            flush=True,
+        )
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+
+    if ssh_password_interactive and not use_sshpass and not sys.stdin.isatty():
         print(
             "pgbench (remote server perf): --pgbench-perf-ssh-password needs a real terminal "
             "(stdin must be a TTY) so ssh can read the password; stdin is tied up when "
@@ -750,8 +764,22 @@ def run_with_perf_monitor_pids_remote_ssh(
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
 
-    use_stdin_for_remote_script = not (ssh_password_interactive and sys.stdin.isatty())
-    if ssh_password_interactive:
+    use_stdin_for_remote_script = (
+        use_sshpass or not (ssh_password_interactive and sys.stdin.isatty())
+    )
+    if use_sshpass:
+        ssh_trailer = [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=25",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "PreferredAuthentications=password,keyboard-interactive",
+        ]
+        ssh_stdio = ["sshpass", "-e", "ssh", "-T"]
+    elif ssh_password_interactive:
         ssh_trailer = ["-o", "ConnectTimeout=25"]
         ssh_stdio = ["ssh", "-tt"]
     else:
@@ -766,7 +794,7 @@ def run_with_perf_monitor_pids_remote_ssh(
             "NumberOfPasswordPrompts=0",
         ]
         ssh_stdio = ["ssh", "-T"]
-    if "-i" in ssh_extra:
+    if "-i" in ssh_extra and not use_sshpass:
         ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
     remote_argv: list[str]
     if use_stdin_for_remote_script:
@@ -774,12 +802,17 @@ def run_with_perf_monitor_pids_remote_ssh(
     else:
         remote_argv = ["bash", "--noprofile", "--norc", "-c", remote_script]
     ssh_cmd = ssh_stdio + list(ssh_extra) + ssh_trailer + [ssh_target] + remote_argv
+    if use_sshpass:
+        popen_env: Optional[dict[str, str]] = dict(env) if env is not None else os.environ.copy()
+        popen_env["SSHPASS"] = ssh_sshpass_password  # type: ignore[assignment]
+    else:
+        popen_env = env
     popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
         "encoding": "utf-8",
-        "env": env,
+        "env": popen_env,
     }
     if use_stdin_for_remote_script:
         popen_kwargs["stdin"] = subprocess.PIPE
@@ -1029,11 +1062,12 @@ def main() -> None:
         metavar="USER@HOST",
         help=(
             "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
-            "SSH user@host. Default: unattended key-based auth (ssh -T): appends BatchMode, "
-            "publickey-only, password prompts off, ConnectTimeout, IdentitiesOnly if -i is in "
-            "--pgbench-perf-ssh-opts. Use --pgbench-perf-ssh-password for interactive "
-            "password (ssh -tt). On the server the script runs sudo -n -- perf ... unless "
-            "--pgbench-perf-ssh-no-sudo (needs NOPASSWD for perf or unprivileged perf policy)."
+            "SSH user@host. Default: unattended key-based auth (ssh -T): BatchMode, "
+            "publickey-only, no password prompts, ConnectTimeout, IdentitiesOnly if -i is in "
+            "--pgbench-perf-ssh-opts. For password auth: --pgbench-perf-ssh-use-pg-password "
+            "(sshpass + same secret as PGPASSWORD) or --pgbench-perf-ssh-password (interactive "
+            "TTY). On the server the script runs sudo -n -- perf ... unless "
+            "--pgbench-perf-ssh-no-sudo (NOPASSWD for perf or unprivileged perf policy)."
         ),
     )
     ap.add_argument(
@@ -1050,7 +1084,20 @@ def main() -> None:
             "need ssh-askpass). Requires a real controlling TTY for this process (e.g. open "
             "TTY, not piping stdin / some IDE runners). Then the remote script is passed via "
             "bash -c. Omit -i unless you use a key. Server must allow password logins for "
-            "that account if you use passwords. Not for CI."
+            "that account if you use passwords. Not for CI. Mutually exclusive with "
+            "--pgbench-perf-ssh-use-pg-password."
+        ),
+    )
+    ap.add_argument(
+        "--pgbench-perf-ssh-use-pg-password",
+        action="store_true",
+        help=(
+            "SSH to --pgbench-perf-ssh using the same password as PostgreSQL: copies PGPASSWORD "
+            "from --pg-password or the environment into sshpass(1) SSHPASS for non-interactive "
+            "login. Requires sshpass in PATH; the Unix account you SSH as must use that same "
+            "password (typical only if you aligned OS and DB credentials). Insecure on shared "
+            "hosts (password visible to process tools). Mutually exclusive with "
+            "--pgbench-perf-ssh-password."
         ),
     )
     ap.add_argument(
@@ -1212,6 +1259,31 @@ def main() -> None:
 
     pg_env = _merge_env(extra_pg)
 
+    ssh_sshpass_pw: Optional[str] = None
+    if args.pgbench_perf_ssh_use_pg_password:
+        if args.pgbench_perf_ssh_password:
+            print(
+                "Use only one of --pgbench-perf-ssh-password or "
+                "--pgbench-perf-ssh-use-pg-password.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        ssh_sshpass_pw = (pg_env.get("PGPASSWORD") or "").strip()
+        if not ssh_sshpass_pw:
+            print(
+                "--pgbench-perf-ssh-use-pg-password requires PGPASSWORD "
+                "(use --pg-password or export PGPASSWORD before running).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not shutil.which("sshpass"):
+            print(
+                "sshpass not found in PATH; install it (e.g. apt install sshpass) for "
+                "--pgbench-perf-ssh-use-pg-password, or use SSH keys.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     load_levels = (
         [int(x) for x in args.loads.split(",") if x.strip()]
         if args.loads
@@ -1329,6 +1401,7 @@ def main() -> None:
                             ssh_extra=perf_ssh_extra,
                             remote_use_sudo=not args.pgbench_perf_ssh_no_sudo,
                             ssh_password_interactive=args.pgbench_perf_ssh_password,
+                            ssh_sshpass_password=ssh_sshpass_pw,
                             timeout=to,
                             env=pg_env,
                         )
