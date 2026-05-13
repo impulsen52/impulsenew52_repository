@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -526,23 +527,70 @@ def _perf_monitor_elevation_prefix() -> list[str]:
     return []
 
 
-def _stop_perf_monitor_and_read(perf_proc: subprocess.Popen[str]) -> str:
-    """Ask perf for the counter summary (SIGINT) then read merged output."""
-    if perf_proc.poll() is None:
+def _signal_perf_process_group(perf_proc: subprocess.Popen[str], sig: int) -> None:
+    pid = perf_proc.pid
+    if not pid:
+        return
+    if hasattr(os, "killpg"):
         try:
-            perf_proc.send_signal(signal.SIGINT)
-        except ProcessLookupError:
+            os.killpg(pid, sig)
+            return
+        except (ProcessLookupError, PermissionError):
             pass
     try:
-        out, _ = perf_proc.communicate(timeout=30)
-    except subprocess.TimeoutExpired:
-        perf_proc.terminate()
+        perf_proc.send_signal(sig)
+    except ProcessLookupError:
+        pass
+
+
+def _stop_perf_monitor_and_read(perf_proc: subprocess.Popen[str]) -> str:
+    """Stop perf monitor without ``communicate()`` (can hang on stuck children)."""
+    chunks: list[str] = []
+    stdout = perf_proc.stdout
+
+    def drain_available() -> None:
+        if not stdout:
+            return
         try:
-            out, _ = perf_proc.communicate(timeout=12)
-        except subprocess.TimeoutExpired:
-            perf_proc.kill()
-            out, _ = perf_proc.communicate(timeout=5)
-    return out or ""
+            r, _, _ = select.select([stdout], [], [], 0.0)
+            if r:
+                chunks.append(stdout.read(1024 * 1024))
+        except (ValueError, OSError, TypeError):
+            pass
+
+    _signal_perf_process_group(perf_proc, signal.SIGINT)
+    deadline = time.time() + 50.0
+    while time.time() < deadline:
+        drain_available()
+        if perf_proc.poll() is not None:
+            break
+        time.sleep(0.05)
+
+    if perf_proc.poll() is None:
+        _signal_perf_process_group(perf_proc, signal.SIGTERM)
+        time.sleep(0.6)
+        drain_available()
+
+    if perf_proc.poll() is None:
+        _signal_perf_process_group(perf_proc, signal.SIGKILL)
+
+    try:
+        perf_proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+    if stdout:
+        try:
+            tail = stdout.read()
+            if tail:
+                chunks.append(tail)
+        except Exception:
+            pass
+        try:
+            stdout.close()
+        except Exception:
+            pass
+    return "".join(chunks)
 
 
 def run_with_perf_monitor_pids(
@@ -590,6 +638,7 @@ def run_with_perf_monitor_pids(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        start_new_session=True,
     )
     try:
         p = _run_cmd(workload_cmd, timeout=timeout)
