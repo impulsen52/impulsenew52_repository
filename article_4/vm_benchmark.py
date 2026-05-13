@@ -323,22 +323,35 @@ def _ssh_capture_looks_like_forced_bash_set_dump(blob: str) -> bool:
 
 
 def _native_postgres_host_pids() -> list[int]:
-    p = _run_cmd(["pgrep", "-x", "postgres"], timeout=30)
+    """Collect PostgreSQL server PIDs (postmaster/workers); PGDG RPM often uses ``postmaster -D``."""
     acc: list[int] = []
-    if p.returncode == 0 and p.stdout.strip():
+
+    def _add_pgrep(tail: list[str]) -> None:
+        p = _run_cmd(["pgrep"] + tail, timeout=30)
+        if p.returncode != 0 or not p.stdout.strip():
+            return
         for line in p.stdout.splitlines():
             t = line.strip()
             if t.isdigit():
                 acc.append(int(t))
-    if acc:
-        return sorted(set(acc))
-    p2 = _run_cmd(["pidof", "postgres"], timeout=30)
-    if p2.returncode != 0 or not p2.stdout.strip():
-        return []
-    for t in p2.stdout.split():
-        st = t.strip()
-        if st.isdigit():
-            acc.append(int(st))
+
+    for spec in (
+        ["-x", "postgres"],
+        ["-x", "postmaster"],
+        ["-f", "postmaster -D"],
+        ["-f", "/postgres -D"],
+        ["-f", "postgres: "],
+    ):
+        _add_pgrep(spec)
+
+    for exe in ("postgres", "postmaster"):
+        p2 = _run_cmd(["pidof", exe], timeout=30)
+        if p2.returncode != 0 or not p2.stdout.strip():
+            continue
+        for t in p2.stdout.split():
+            st = t.strip()
+            if st.isdigit():
+                acc.append(int(st))
     return sorted(set(acc))
 
 
@@ -759,7 +772,7 @@ def run_with_perf_monitor_pids_remote_ssh(
     counter_target: str = "postgres_server_ssh",
 ) -> tuple[int, str, str, Optional[PerfMetrics]]:
     """
-    Run workload locally while ``perf stat -p $(pgrep -x postgres)`` runs on ``ssh_target``.
+    Run workload locally while ``perf stat -p <postmaster/postgres PIDs>`` runs on ``ssh_target``.
 
     Unattended (key) mode: send the remote script on **stdin** to ``bash -s``. Interactive
     password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + same string as
@@ -771,7 +784,12 @@ def run_with_perf_monitor_pids_remote_ssh(
     )
     remote_script = (
         "set -e; "
-        r'PIDS=$(pgrep -x postgres 2>/dev/null | tr "\n" "," | sed "s/,$//"); '
+        "PIDS=$( { pgrep -x postgres 2>/dev/null; pgrep -x postmaster 2>/dev/null; "
+        "pgrep -f 'postmaster -D' 2>/dev/null; pgrep -f '/postgres -D' 2>/dev/null; "
+        "pgrep -f 'postgres: ' 2>/dev/null; "
+        "for x in $(pidof postgres 2>/dev/null); do echo \"$x\"; done; "
+        "for x in $(pidof postmaster 2>/dev/null); do echo \"$x\"; done; "
+        r'} 2>/dev/null | grep -E "^[0-9]+$" | sort -nu | tr "\n" "," | sed "s/,$//" ); '
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
