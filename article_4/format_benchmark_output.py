@@ -122,11 +122,15 @@ def linpack_row(r: dict[str, Any]) -> list[str]:
 
 def emit_text(data: dict[str, Any], *, source: Optional[Path] = None) -> str:
     chunks: list[str] = []
+    ds = data.get("duration_sec")
+    ds_meta = "null (-t mode: no pgbench time limit)" if ds is None else str(ds)
+    tx = data.get("pgbench_transactions_per_client")
+    tx_meta = "" if tx is None else str(tx)
     meta = [
         f"source: {source.resolve()}" if source else "source: (stdin or unknown)",
         f"environment: {data.get('environment', '')}",
-        f"pgbench_run_duration_sec (-T): {data.get('duration_sec', '')}",
-        f"pgbench_transactions_per_client (-t): {data.get('pgbench_transactions_per_client', '')}",
+        f"pgbench_time_limit_sec (-T): {ds_meta}",
+        f"pgbench_transactions_per_client (-t): {tx_meta}",
         f"load_levels: {data.get('load_levels', [])}",
     ]
     chunks.append("\n".join(meta) + "\n")

@@ -21,8 +21,9 @@ Dependencies (typical Debian package names):
 PostgreSQL note: pgbench -i creates pgbench tables inside an existing database; this
 script never runs CREATE DATABASE. Empty --pg-user / --pg-database means libpq defaults
 (OS user name, default database). Use --pg-host local to omit -h/-p (Unix socket).
-Use --skip-pgbench-init if you already ran pgbench -i. Defaults: -c 80 -j 8, -T from
---duration, or use --pgbench-transactions for -t (per-client transaction count).
+Use --skip-pgbench-init if you already ran pgbench -i. Defaults: -c 80 -j 8.
+Use either --duration for pgbench -T (default 30s) or --pgbench-transactions for -t
+(fixed work per client; no time limit on pgbench).
 
 By default pgbench is run as OS user postgres: sudo -E -u postgres -- pgbench ...
 (peer auth). Use --pgbench-no-sudo to run pgbench as the invoking user, or
@@ -90,7 +91,8 @@ class BenchRow:
 @dataclass
 class BenchReport:
     environment: str
-    duration_sec: int
+    #: pgbench -T seconds, or None when using -t (no time limit in pgbench).
+    duration_sec: Optional[int] = None
     load_levels: list[int] = field(default_factory=list)
     rows: list[dict[str, Any]] = field(default_factory=list)
     linpack_docker_env: dict[str, str] = field(default_factory=dict)
@@ -531,8 +533,12 @@ def main() -> None:
     ap.add_argument(
         "--duration",
         type=int,
-        default=30,
-        help="pgbench -T seconds (ignored if --pgbench-transactions is set)",
+        default=None,
+        metavar="SEC",
+        help=(
+            "pgbench -T: time limit in seconds (default 30 when not using --pgbench-transactions). "
+            "With --pgbench-transactions, pgbench runs a fixed -t workload only (no -T)."
+        ),
     )
     ap.add_argument(
         "--pgbench-transactions",
@@ -540,8 +546,7 @@ def main() -> None:
         default=None,
         metavar="N",
         help=(
-            "pgbench -t: each client runs N transactions (mutually exclusive with -T; "
-            "when set, --duration is not passed to pgbench)"
+            "pgbench -t: each client runs N transactions (no -T; run ends when work is done)."
         ),
     )
     ap.add_argument(
@@ -669,6 +674,16 @@ def main() -> None:
         print("--pgbench-transactions must be >= 1", file=sys.stderr)
         sys.exit(2)
 
+    if args.pgbench_transactions is None:
+        if args.duration is None:
+            args.duration = 30
+    elif args.duration is not None:
+        print(
+            "Note: --duration is not used when --pgbench-transactions is set "
+            "(pgbench uses -t only, no -T).",
+            file=sys.stderr,
+        )
+
     linpack_path = os.path.abspath(args.linpack_binary)
     if not os.path.isfile(linpack_path) or not os.access(linpack_path, os.X_OK):
         print(f"Not an executable file: {linpack_path!r}", file=sys.stderr)
@@ -767,7 +782,7 @@ def main() -> None:
 
     report = BenchReport(
         environment="native_vm",
-        duration_sec=args.duration,
+        duration_sec=None if args.pgbench_transactions is not None else args.duration,
         load_levels=list(load_levels),
         linpack_process_env=dict(linpack_env_map),
         pgbench_transactions_per_client=args.pgbench_transactions,

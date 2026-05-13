@@ -40,8 +40,13 @@ def main() -> None:
     parser.add_argument(
         "--duration",
         type=int,
-        default=30,
-        help="pgbench -T duration in seconds (default 30); ignored if --pgbench-transactions is set",
+        default=None,
+        metavar="SEC",
+        help=(
+            "pgbench -T: time limit in seconds (default 30 when not using --pgbench-transactions). "
+            "With --pgbench-transactions, pgbench runs until the transaction count finishes; "
+            "do not pass --duration unless you want it for documentation (it is not passed to pgbench)."
+        ),
     )
     parser.add_argument(
         "--pgbench-transactions",
@@ -49,8 +54,7 @@ def main() -> None:
         default=None,
         metavar="N",
         help=(
-            "pgbench -t: run each client for N transactions (mutually exclusive with -T; "
-            "when set, --duration is not passed to pgbench)"
+            "pgbench -t: each client runs N transactions (no -T; run ends when work completes)."
         ),
     )
     parser.add_argument(
@@ -150,6 +154,16 @@ def main() -> None:
     if args.pgbench_transactions is not None and args.pgbench_transactions < 1:
         print("--pgbench-transactions must be >= 1", file=sys.stderr)
         sys.exit(2)
+
+    if args.pgbench_transactions is None:
+        if args.duration is None:
+            args.duration = 30
+    elif args.duration is not None:
+        print(
+            "Note: --duration is not used when --pgbench-transactions is set "
+            "(pgbench uses -t only, no -T).",
+            file=sys.stderr,
+        )
 
     docker_ok, docker_err = docker_check()
     if not docker_ok:

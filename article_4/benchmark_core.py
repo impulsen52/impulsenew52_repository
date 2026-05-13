@@ -68,7 +68,8 @@ class BenchRow:
 @dataclass
 class BenchReport:
     environment: str
-    duration_sec: int
+    #: pgbench ``-T`` seconds; ``None`` when the run used ``-t`` (no time limit).
+    duration_sec: Optional[int] = None
     load_levels: list[int] = field(default_factory=list)
     rows: list[dict[str, Any]] = field(default_factory=list)
     linpack_docker_env: dict[str, str] = field(default_factory=dict)
@@ -614,7 +615,7 @@ def run_sequential_suite(
     environment: str,
     pg_container: str,
     linpack_image: str,
-    duration: int,
+    duration: Optional[int] = None,
     load_levels: Iterable[int] = DEFAULT_LOAD_LEVELS,
     use_perf: bool = True,
     stress_image: str = STRESS_IMAGE,
@@ -631,9 +632,16 @@ def run_sequential_suite(
         array_size=linpack_array_size,
         extra=linpack_extra_env,
     )
+    if pgbench_transactions is not None:
+        pgbench_duration_for_iter = duration if duration is not None else 0
+        report_duration: Optional[int] = None
+    else:
+        d = 30 if duration is None else duration
+        pgbench_duration_for_iter = d
+        report_duration = d
     report = BenchReport(
         environment=environment,
-        duration_sec=duration,
+        duration_sec=report_duration,
         load_levels=levels,
         linpack_docker_env=dict(linpack_env),
         pgbench_transactions_per_client=pgbench_transactions,
@@ -657,7 +665,7 @@ def run_sequential_suite(
                     t0 = time.time()
                 tps, perf_m, out, err, err_p, pg_code = run_pgbench_iter(
                     pg_container,
-                    duration,
+                    pgbench_duration_for_iter,
                     use_perf=use_perf,
                     pg_host=pg_host,
                     pg_port=pg_port,
