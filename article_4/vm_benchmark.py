@@ -440,23 +440,26 @@ def _ssh_capture_looks_like_forced_bash_set_dump(blob: str) -> bool:
 
 
 def _native_postgres_host_pids() -> list[int]:
-    p = _run_cmd(["pgrep", "-x", "postgres"], timeout=30)
-    acc: list[int] = []
-    if p.returncode == 0 and p.stdout.strip():
-        for line in p.stdout.splitlines():
-            t = line.strip()
-            if t.isdigit():
-                acc.append(int(t))
+    """PIDs of the database server on this machine (Debian: ``postgres``, RHEL: ``postmaster``)."""
+    acc: set[int] = set()
+    for exe in ("postgres", "postmaster"):
+        p = _run_cmd(["pgrep", "-x", exe], timeout=30)
+        if p.returncode == 0 and p.stdout.strip():
+            for line in p.stdout.splitlines():
+                t = line.strip()
+                if t.isdigit():
+                    acc.add(int(t))
     if acc:
-        return sorted(set(acc))
-    p2 = _run_cmd(["pidof", "postgres"], timeout=30)
-    if p2.returncode != 0 or not p2.stdout.strip():
-        return []
-    for t in p2.stdout.split():
-        st = t.strip()
-        if st.isdigit():
-            acc.append(int(st))
-    return sorted(set(acc))
+        return sorted(acc)
+    for exe in ("postgres", "postmaster"):
+        p2 = _run_cmd(["pidof", exe], timeout=30)
+        if p2.returncode != 0 or not p2.stdout.strip():
+            continue
+        for t in p2.stdout.split():
+            st = t.strip()
+            if st.isdigit():
+                acc.add(int(st))
+    return sorted(acc)
 
 
 def _pg_conn_args(
@@ -876,7 +879,8 @@ def run_with_perf_monitor_pids_remote_ssh(
     counter_target: str = "postgres_server_ssh",
 ) -> tuple[int, str, str, Optional[PerfMetrics]]:
     """
-    Run workload locally while ``perf stat -p $(pgrep -x postgres)`` runs on ``ssh_target``.
+    Run workload locally while ``perf stat -p`` runs on ``ssh_target`` (PIDs from
+    ``pgrep -x postgres`` or ``pgrep -x postmaster``).
 
     Unattended (key) mode: send the remote script on **stdin** to ``bash -s``. Interactive
     password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + same string as
@@ -888,7 +892,7 @@ def run_with_perf_monitor_pids_remote_ssh(
     )
     remote_script = (
         "set -e; "
-        r'PIDS=$(pgrep -x postgres 2>/dev/null | tr "\n" "," | sed "s/,$//"); '
+        r'PIDS=$( (pgrep -x postgres; pgrep -x postmaster) 2>/dev/null | sort -u -n | tr "\n" "," | sed "s/,$//"); '
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
@@ -1013,7 +1017,7 @@ def run_with_perf_monitor_pids_remote_ssh(
                 pass
         print(
             "pgbench (remote server perf): could not start monitoring on DB host "
-            "(no postgres PIDs, ssh error, or perf/sudo failed). "
+            "(no postgres/postmaster PIDs, ssh error, or perf/sudo failed). "
             f"Remote output (first 800 chars): {early[:800]!r}",
             file=sys.stderr,
             flush=True,
@@ -1573,7 +1577,7 @@ def main() -> None:
                     pids = _native_postgres_host_pids()
                     if not pids:
                         print(
-                            "pgbench: no local postgres PIDs (pgrep); running without perf.",
+                            "pgbench: no local postgres/postmaster PIDs (pgrep); running without perf.",
                             file=sys.stderr,
                         )
                         p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
