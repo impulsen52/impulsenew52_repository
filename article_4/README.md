@@ -1,33 +1,36 @@
 # Статья №4
 
-Каталог с материалами для четвёртой научной статьи: комплексный бенчмарк виртуальных машин и контейнеров (Astra Linux, РЕД ОС, QEMU-KVM, Docker).
+Материалы для четвёртой научной статьи: комплексный бенчмарк виртуальных машин и контейнеров (Astra Linux, РЕД ОС, QEMU/KVM, Docker).
 
 ## Содержимое
 
 - **`TASK.md`** — постановка задачи и описание метрик.
 - **`TASK_APPLE_ARM.md`** — заметки по сценарию на Apple ARM.
-- **Скрипты:** `deploy_vm.py`, `vm_benchmark.py`, `container_benchmark.py`, `benchmark_core.py`, `format_benchmark_output.py`.
-- **Данные:** `bench.json`, `bench_distant.json`, `output.json`, `OUTPUT.json` (при необходимости обновляйте или добавляйте версии с понятными именами).
-
-## Общее
-
-Все команды ниже предполагают, что вы уже в каталоге `article_4/` (из корня клона репозитория: `cd article_4`). Так корректны относительные пути к JSON и импорт `benchmark_core` в контейнерном драйвере.
-
-```bash
-cd article_4
-```
-
-Справка по аргументам у любого скрипта: `python3 <имя_файла>.py --help`.
+- **Скрипты:** `deploy_vm.py`, `container_benchmark.py`, `vm_benchmark.py`, `benchmark_core.py`, `format_benchmark_output.py`.
+- **Примеры JSON:** `bench.json`, `bench_distant.json`, `output.json` и др. (при необходимости обновляйте или добавляйте файлы с понятными именами).
 
 ---
 
-## 1. `deploy_vm.py` — ВМ под QEMU/KVM (libvirt)
+## Общее
 
-Назначение: развернуть гостевую ОС с ISO (`virt-install`) и при необходимости узнать IPv4 гостя для доступа к PostgreSQL с хоста с Docker.
+Команды ниже предполагают каталог `article_4/` (из корня клона: `cd article_4`). Контейнерный драйвер импортирует `benchmark_core.py` из того же каталога.
 
-**На машине:** установлены `virt-install`, `qemu-img`, `virsh`; для `qemu:///session` скрипт сам переключит сеть на `user` (slirp), если не задана своя `--network`.
+```bash
+cd article_4
+python3 <скрипт>.py --help
+```
 
-**Создание ВМ** (после установки ОС из ISO гость должен быть настроен вручную, как в `TASK.md`):
+**Python:** 3.10+ (используются аннотации современного стиля).
+
+---
+
+## 1. `deploy_vm.py` — ВМ под QEMU/KVM (libvirt / virt-install)
+
+**Назначение:** создать гостевую ОС с установочного ISO, virtio-диск и сеть; опционально вывести IPv4 гостя для доступа к PostgreSQL с хоста.
+
+**На машине-домене:** `virt-install`, `qemu-img`, при `--print-ip` — `virsh`. Для `qemu:///session` скрипт может переключить сеть на `user` (slirp), если не задана своя `--network`. В госте для надёжного `--print-ip` желателен **qemu-guest-agent**.
+
+**Создание ВМ** (установка ОС из ISO — интерактивно, как в `TASK.md`):
 
 ```bash
 python3 deploy_vm.py --name bench-guest \
@@ -36,135 +39,160 @@ python3 deploy_vm.py --name bench-guest \
   --connect qemu:///session
 ```
 
-Путь `--disk` для обычного пользователя лучше задавать в домашнем каталоге: каталог по умолчанию под `/var/lib/libvirt/images/` часто недоступен на запись.
-
-**Проверка сухого прогона** (только команда `virt-install`):
+**Сухой прогон** (только печать команды `virt-install`):
 
 ```bash
-python3 deploy_vm.py --name bench-guest --iso /путь/к.iso --disk "$HOME/libvirt-images/bench-guest.qcow2" --dry-run
+python3 deploy_vm.py --name bench-guest --iso /путь/к.iso \
+  --disk "$HOME/libvirt-images/bench-guest.qcow2" --dry-run
 ```
 
-**IP гостя** (когда ВМ уже установлена и запущена; `--iso` не нужен):
+**IP гостя** (ВМ уже установлена и запущена; `--iso` не нужен):
 
 ```bash
 python3 deploy_vm.py --print-ip --name bench-guest --connect qemu:///session
 ```
 
-Тот же URI `--connect`, что и при создании. Надёжнее, если в госте установлен `qemu-guest-agent`; иначе смотрите подсказки скрипта и `virsh domifaddr`.
+Используйте тот же `--connect`, что при создании. Полученный IP передаётся в **`container_benchmark.py`** как **`--pg-host`**, если PostgreSQL в госте, а Docker с бенчмарком — на хосте.
 
-Полученный IP далее передаётся в **`container_benchmark.py`** как `--pg-host` (см. раздел 2), если PostgreSQL крутится внутри ВМ, а Docker с `pgbench` — на хосте.
+**Сеть (кратко):** `default` (NAT libvirt, обычно `qemu:///system`), `user` (slirp для сессии), `bridge:br0`, `sriov:имя_pf`. Подробности — `python3 deploy_vm.py --help`.
 
 ---
 
-## 2. `container_benchmark.py` — бенчмарк с Docker на хосте
+## 2. `container_benchmark.py` — бенчмарк на хосте с Docker
 
-Назначение: на машине с Docker поднимается контейнер `postgres:latest`, при необходимости собирается образ linpack из репозитория `ereyes01/linpack`, на хосте крутится `stress-ng` для ступеней нагрузки CPU (0–100?%), замеряются pgbench (TPS) и linpack (MFLOPS), опционально оборачивается `perf stat`, в JSON пишутся фазы и метрики.
+**Назначение:** в контейнере поднимается PostgreSQL (`postgres-bench` по умолчанию); `pgbench` и `psql` выполняются через **`docker exec`** в этот же контейнер (или к БД на `--pg-host`, например IP ВМ). На **хосте** в Docker крутится `stress-ng` на ступенях нагрузки CPU **0, 20, …, 100%** (или свой список `--loads`). Затем для каждого уровня: **pgbench ? linpack** в отдельном контейнере-образе. Опционально **`perf stat`**; опционально счётчики **RX/TX** с выбранного интерфейса (`/sys/class/net/...`). Отчёт — JSON в stdout и/или в `-o`.
 
-**Зависимости:** работающий Docker; `git` (для первичной сборки образа linpack); по желанию `perf` на хосте.
+**Зависимости:** Docker; `git` (первая сборка образа linpack из `ereyes01/linpack`); опционально **`perf`** на хосте. Для режима **`--pgbench-perf-target server`** (по умолчанию) выборка **PID процессов postgres в контейнере** и `perf -p` часто требуют **root** или **`sudo -n`** на хосте (см. ниже).
 
-**Типичный полный прогон на одной машине** (БД в контейнере на `localhost`, результат в файл, учёт трафика на интерфейсе `eth0`):
+**Типичный прогон** (БД в контейнере на `localhost`, учёт трафика на `eth0`):
 
 ```bash
-python3 container_benchmark.py \
-  --network-iface eth0 \
-  -o bench_docker.json
+python3 container_benchmark.py --network-iface eth0 -o bench_docker.json
 ```
 
-Скрипт всё равно дублирует JSON в stdout; основной артефакт для статьи — файл из `-o`.
-
-**Параметры, которые чаще всего меняют:**
-
-| Параметр | Смысл |
-|----------|--------|
-| `-o` / `--output` | путь к JSON-отчёту |
-| `--duration` | длительность одного прогона pgbench, секунды (`-T` pgbench), по умолчанию 30 |
-| `--pg-container` | имя контейнера PostgreSQL (по умолчанию `postgres-bench`) |
-| `--pg-host` / `--pg-port` | хост и порт PostgreSQL с точки зрения `docker exec` (например IP ВМ, если БД в госте) |
-| `--network-iface` | интерфейс Linux для колонок RX/TX в JSON (например `eth0`) |
-| `--loads` | свои уровни нагрузки, например `0,50,100` (по умолчанию 0,20,…,100) |
-| `--no-perf` | не вызывать `perf stat` |
-| `--skip-pgbench-init` | не выполнять `pgbench -i`, если тестовая БД уже инициализирована |
-| `--skip-linpack-build` | не собирать linpack, если образ уже есть (иначе при отсутствии образа будет ошибка) |
-| `--linpack-src` | каталог с уже клонированным репозиторием linpack (не клонировать заново) |
-
-**PostgreSQL на другой машине (например в ВМ):** на хосте с Docker:
+**PostgreSQL во ВМ, Docker на хосте:**
 
 ```bash
-export PGPASSWORD='ваш_пароль_роли'   # если нужен пароль для подключения из контейнера
+export PGPASSWORD='пароль_роли'   # если нужен для подключения из контейнера
 python3 container_benchmark.py \
   --pg-host 192.168.122.45 \
   --network-iface eth0 \
   -o bench_remote_db.json
 ```
 
-IP подставьте из `deploy_vm.py --print-ip` или из вашей сети. `PGPASSWORD` передаётся в окружение `docker exec` для клиента в контейнере.
+### Режимы pgbench по времени и по числу транзакций
 
-**Ускорение экспериментов:** уменьшить размер задачи linpack (если поддерживается образом):
+- **`--duration`** — лимит времени pgbench (**`-T`**), по умолчанию **30** с, если не задан **`--pgbench-transactions`**.
+- **`--pgbench-transactions N`** — режим **`-t N`** (число транзакций **на клиента**). С **`pgbench`** не передаётся **`-T`**. В JSON **`duration_sec`** на верхнем уровне будет **`null`** (нет лимита по времени в pgbench); есть поле **`pgbench_transactions_per_client`**. Если указаны оба флага, **`--duration` для pgbench не используется** (в stderr — короткое напоминание).
 
-```bash
-python3 container_benchmark.py --linpack-array-size 80 -o bench_quick.json
-```
+### `--pgbench-perf-target server | client`
+
+- **`server`** (по умолчанию): **`perf`** не оборачивает **`pgbench`**. Собираются **хостовые PID** процессов, в командной строке которых есть **`postgres`**, из **`docker top <контейнер>`**; параллельно запускается **`perf stat -p …`** (см. `benchmark_core.py`). Нужен **loopback** **`--pg-host`** с точки зрения контейнера (`localhost`, `127.0.0.1`, `::1`). Иначе — предупреждение и замер **`pgbench`** как у режима **`client`**.
+- **`client`**: классически **`perf stat … docker exec … pgbench`** — метрики ближе к процессу-клиенту.
+
+Для **не-root** на хосте монитор **`perf -p`** к процессам БД часто выполняется как **`sudo -n perf …`**; без passwordless sudo метрики **perf** для фазы pgbench могут быть пустыми — см. поле **`perf_raw_tail`** в JSON при ошибке парсинга.
+
+### Полезные параметры (`container_benchmark.py`)
+
+| Параметр | Смысл |
+|----------|--------|
+| `-o` / `--output` | Файл JSON-отчёта |
+| `--duration` | Секунды **`pgbench -T`** (по умолчанию 30, если нет `--pgbench-transactions`) |
+| `--pgbench-transactions` | **`pgbench -t`** на клиента |
+| `--pgbench-perf-target` | `server` или `client` (см. выше) |
+| `--pg-container` | Имя контейнера Postgres (по умолчанию `postgres-bench`) |
+| `--postgres-image` / образ из окружения | Образ Postgres на нестандартных архитектурах |
+| `--pg-host` / `--pg-port` | Куда подключаться из контейнера |
+| `--network-iface` | Интерфейс для полей **`network`** в строках JSON |
+| `--loads` | Уровни нагрузки, напр. `0,50,100` |
+| `--no-perf` | Отключить **perf** |
+| `--skip-pgbench-init` | Не выполнять **`pgbench -i`** |
+| `--linpack-array-size` | Env **`LINPACK_ARRAY_SIZE`** для образа linpack (? 10) |
+| `--linpack-src` / `--skip-linpack-build` | Клон / отказ от сборки linpack |
+
+### Формат JSON (сокращённо)
+
+- **`environment`:** `docker_on_host`
+- **`duration_sec`:** лимит **`-T`** в отчёте или **`null`** в режиме **`-t`**
+- **`pgbench_transactions_per_client`:** при **`--pgbench-transactions`**
+- **`rows[]`:** фазы **`pgbench`** и **`linpack`**, поля **`tps`**, **`mflops`**, **`perf`** (в т.ч. **`counter_target`**, **`monitored_pid_count`**, при сбое разбора — **`perf_raw_tail`**), **`network`**, **`exit_code`**, **`exit_note`** (для linpack с ненулевым кодом выхода при «успешном» прогоне)
 
 ---
 
-## 3. `vm_benchmark.py` — бенчмарк внутри гостевой ВМ (без Docker-драйвера)
+## 3. `vm_benchmark.py` — бенчмарк внутри гостевой ОС (без Docker)
 
-Назначение: те же фазы pgbench ? linpack и ступени нагрузки `stress-ng`, но скрипт запускается **на установленной гостевой ОС**, PostgreSQL и pgbench — нативно, linpack — указанный бинарник на диске гостя.
+**Назначение:** один файл, **без** `benchmark_core` и без контейнеров. Для каждого уровня нагрузки: опционально **`stress-ng`** на госте ? **pgbench** ? локальный **linpack**-бинарник. Те же идеи по **`perf`** и **`--network-iface`**, что в контейнерном сценарии, но PID сервера собираются через **`pgrep -x postgres`** / **`pidof`** на **этой** ВМ.
 
-**Зависимости в госте:** установленные PostgreSQL (в т.ч. `pgbench`), собранный/установленный исполняемый файл linpack из сценария `TASK.md`, в PATH — `stress-ng`; для пользователя `postgres` и peer-auth обычно нужен `sudo`; опционально `perf`.
+**Зависимости в госте:** PostgreSQL и клиент (`pgbench`, `pg_isready`); **`stress-ng`** (или **`--no-stress`**); **`perf`** (или **`--no-perf`**); путь к собранному **linpack**.
 
-Минимальный пример (подставьте реальный путь к linpack):
+**Минимальный пример:**
 
 ```bash
-sudo python3 vm_benchmark.py \
+python3 vm_benchmark.py \
   --linpack-binary /usr/local/bin/linpack \
   --duration 30 \
   -o vm_guest.json
 ```
 
-**Полезные флаги:**
+Часто для сокета и peer-аутентификации:
+
+```bash
+python3 vm_benchmark.py --pg-host local --pg-user postgres --pg-database mydb \
+  --linpack-binary /path/to/linpack -o vm_guest.json
+```
+
+Пароль для TCP:
+
+```bash
+export PGPASSWORD='секрет'
+python3 vm_benchmark.py --pg-host 127.0.0.1 --pgbench-no-sudo \
+  --pg-user postgres --pg-database mydb \
+  --linpack-binary /path/to/linpack -o vm_guest.json
+```
+
+### Параметры, которые часто меняют
 
 | Параметр | Смысл |
 |----------|--------|
-| `--linpack-binary` | обязательный путь к исполняемому файлу linpack |
-| `--pg-host` | `local` — Unix-сокет; `127.0.0.1` — TCP на localhost (для осмысленного учёта трафика на `lo` вместе с `--network-iface`, см. справку скрипта) |
-| `--pg-user` / `--pg-database` | роль и БД PostgreSQL |
-| `--pg-password` | при необходимости выставляет `PGPASSWORD` для процесса |
-| `--pgbench-no-sudo` | не оборачивать pgbench в `sudo` |
-| `--no-stress` | без фоновой нагрузки `stress-ng` |
-| `--no-perf` | без `perf` |
-| `--network-iface` | явно указать интерфейс для `/sys/class/net/...`; иначе для localhost может подставиться `lo` |
-| `-o` | файл JSON |
+| `--linpack-binary` | **Обязателен** — путь к исполняемому linpack |
+| `--duration` / `--pgbench-transactions` | Режим **`-T`** или **`-t`** (логика как у контейнерного драйвера) |
+| `--pgbench-perf-target` | `server` (PID **postgres** на госте + фоновый **perf**) или `client` (**perf** вокруг **pgbench**) |
+| `--pg-host` | `local` / `unix` — без `-h`; `localhost` / `127.0.0.1` — TCP; для **server**-**perf** при удалённом `--pg-host` — откат к **client** |
+| `--pgbench-os-user` / `--pgbench-no-sudo` | Запуск **pgbench** от имени пользователя ОС (по умолчанию **sudo -u postgres**) |
+| `--scale`, `--clients`, `--jobs` | Параметры **`pgbench -i`** / прогона |
+| `--linpack-array-size` | Env для linpack |
+| `--network-iface` | Явный интерфейс; для loopback без флага может подставиться **`lo`** |
+| `--no-stress`, `--no-perf`, `--skip-pgbench-init`, `--loads`, `-o`, `--verbose` | По смыслу |
+
+**JSON:** **`environment`: `native_vm`**, плюс **`linpack_process_env`**. Остальная структура строк совместима по смыслу с контейнерным отчётом.
 
 ---
 
 ## 4. `format_benchmark_output.py` — таблицы и CSV из JSON
 
-Назначение: превратить отчёт из `container_benchmark.py` (`-o`) или `vm_benchmark.py` (`-o`) в читаемые ASCII-таблицы или один CSV.
-
-По умолчанию читается `output.json` в текущем каталоге:
+Читает файл (по умолчанию **`output.json`** в текущем каталоге), печатает метаданные (**в т.ч. режим **`-T`** vs **`-t`**), ASCII-таблицы по фазам **pgbench** и **linpack**, опционально CSV.
 
 ```bash
-python3 format_benchmark_output.py
 python3 format_benchmark_output.py bench_docker.json
+python3 format_benchmark_output.py bench_docker.json -o tables.txt
+python3 format_benchmark_output.py bench_docker.json --csv -o bench.csv
 ```
 
-Таблицы в терминал; в файл:
-
-```bash
-python3 format_benchmark_output.py bench_docker.json -o bench_docker_tables.txt
-```
-
-Все фазы одним CSV:
-
-```bash
-python3 format_benchmark_output.py bench_docker.json --csv -o bench_docker.csv
-```
-
-Если в таблицах пусто по RX/TX, в исходном JSON не было полей `network` (запуск без `--network-iface` в контейнерном драйвере или старый формат файла).
+Пустые колонки RX/TX обычно означают: запуск без **`--network-iface`**, устаревший JSON **без** `network` в строках или открыт **не тот** файл (не тот, что передали в **`-o`** у бенчмарка).
 
 ---
 
 ## 5. `benchmark_core.py`
 
-Общая логика для контейнерного сценария; **не запускается отдельно** как точка входа — его импортирует `container_benchmark.py`.
+Общая логика для **`container_benchmark.py`** (последовательность нагрузок, Docker, **pgbench**/**linpack**, **perf**, сеть). **Отдельно не запускается** — только импорт.
+
+---
+
+## Сводка сценариев
+
+| Где | Скрипт | Роль |
+|-----|--------|------|
+| Гипервизор | `deploy_vm.py` | Создание ВМ, при необходимости — IP гостя |
+| Хост с Docker | `container_benchmark.py` | Postgres в контейнере (или БД на `--pg-host`), linpack в образе, stress в контейнере |
+| Внутри гостя | `vm_benchmark.py` | Нативный Postgres + linpack + stress-ng |
+| Любой | `format_benchmark_output.py` | Человекочитаемый вывод из JSON |
