@@ -26,8 +26,8 @@ Dependencies (typical Debian package names):
   iproute2 (``ip``) helps auto-select ``--network-iface`` for remote TCP.
   sshpass (optional) for non-interactive SSH password alongside ``PGPASSWORD``.
   For local server perf, non-root users need passwordless ``sudo -n`` for ``perf -p`` on
-  this host, or run as root. On the **remote** host the SSH user needs ``sudo -n`` for
-  ``perf`` unless ``--pgbench-perf-ssh-no-sudo``.
+  this host, or run as root. On the **remote** host ``perf`` is run as
+  ``sudo -n -- perf ...`` from the SSH session (configure passwordless sudo for ``perf``).
   linpack: build from https://github.com/ereyes01/linpack
     gcc -O3 -o linpack linpack.c -lm
 
@@ -742,7 +742,6 @@ def run_with_perf_monitor_pids_remote_ssh(
     *,
     ssh_target: str,
     ssh_extra: list[str],
-    remote_use_sudo: bool,
     ssh_password_interactive: bool = False,
     ssh_sshpass_password: Optional[str] = None,
     timeout: Optional[float] = None,
@@ -756,15 +755,9 @@ def run_with_perf_monitor_pids_remote_ssh(
     password: TTY + ``bash -c``. ``ssh_sshpass_password``: ``sshpass -e`` + same string as
     ``SSHPASS`` (non-interactive; use with ``PGPASSWORD`` when the Unix login uses that secret).
     """
-    use_sudo_on_remote = remote_use_sudo
     perf_inv = (
         "sudo -n -- perf stat -e duration_time,page-faults,context-switches "
         '-B -p "$PIDS" -- sleep 86400'
-        if use_sudo_on_remote
-        else (
-            "perf stat -e duration_time,page-faults,context-switches "
-            '-B -p "$PIDS" -- sleep 86400'
-        )
     )
     remote_script = (
         "set -e; "
@@ -1095,14 +1088,6 @@ def main() -> None:
         ),
     )
     ap.add_argument(
-        "--pgbench-perf-ssh-no-sudo",
-        action="store_true",
-        help=(
-            "On the DB host, run perf without sudo -n (use when perf can attach to postgres "
-            "PIDs as the SSH user, e.g. relaxed kernel.perf_event_paranoid or matching caps)."
-        ),
-    )
-    ap.add_argument(
         "--no-stress",
         action="store_true",
         help="Do not run stress-ng (all load levels run with 0%% background load).",
@@ -1385,7 +1370,6 @@ def main() -> None:
                             _full_pgbench_argv(),
                             ssh_target=perf_ssh_target,
                             ssh_extra=perf_ssh_extra,
-                            remote_use_sudo=not args.pgbench_perf_ssh_no_sudo,
                             ssh_password_interactive=args.pgbench_perf_ssh_password,
                             ssh_sshpass_password=ssh_sshpass_pw,
                             timeout=to,
