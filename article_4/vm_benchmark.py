@@ -18,7 +18,8 @@ always runs on the benchmark host; only **perf** runs on the DB host over SSH. R
 run the driver fetches that file with a second ``ssh`` (``cat``), so counters do not depend
 on piping ``perf`` output through the long-lived SSH session. Client needs ``ssh``; if
 ``PGPASSWORD`` is set (``--pg-password`` / env), non-interactive SSH uses ``sshpass`` when
-installed (same secret as the Unix login on the server). Optional ``--pgbench-perf-ssh-opts``
+installed (same secret as the Unix login on the server), **unless** ``-i`` is given in
+``--pgbench-perf-ssh-opts`` (``sshpass`` mode disables public-key auth and would ignore the key). Optional ``--pgbench-perf-ssh-opts``
 passes extra ``ssh`` arguments (e.g. ``-i`` for a key). ``--pgbench-perf-ssh-password`` forces
 interactive SSH password from a TTY. If ``authorized_keys`` uses ``command=...``, remote perf
 can break (shell ``set`` dumps). For ``sshpass``/non-interactive SSH, the remote monitor script
@@ -1276,7 +1277,9 @@ def main() -> None:
         metavar="ARGS",
         help=(
             "Extra ssh(1) arguments for remote TCP server perf (one shell-quoted string), "
-            "e.g. -i /path/key -p 2222. SSH target is always {--pg-user or postgres}@<--pg-host>."
+            "e.g. -i /path/key -p 2222. SSH target is always {--pg-user or postgres}@<--pg-host>. "
+            "If -i is present, SSH uses public-key auth only (PGPASSWORD is not reused for SSH "
+            "via sshpass, since that mode disables publickey)."
         ),
     )
     ap.add_argument(
@@ -1284,7 +1287,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Interactive SSH password for remote server perf (ssh -tt; needs a real TTY). "
-            "If omitted and PGPASSWORD is set, sshpass is used automatically when installed."
+            "If omitted and PGPASSWORD is set, sshpass is used automatically when installed, "
+            "unless -i appears in --pgbench-perf-ssh-opts (then SSH uses the key only)."
         ),
     )
     ap.add_argument(
@@ -1445,7 +1449,10 @@ def main() -> None:
     if perf_ssh_target and not args.pgbench_perf_ssh_password:
         _pw = (pg_env.get("PGPASSWORD") or "").strip()
         if _pw:
-            if shutil.which("sshpass"):
+            # sshpass mode sets PubkeyAuthentication=no; that would ignore ``-i`` keys.
+            if "-i" in perf_ssh_extra:
+                pass
+            elif shutil.which("sshpass"):
                 ssh_sshpass_pw = _pw
             else:
                 print(
