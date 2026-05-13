@@ -14,7 +14,8 @@ By default pgbench ``perf`` targets the **PostgreSQL server** only: local ``pgre
 ``--pg-host`` is a Unix socket or loopback TCP, or **SSH** to
 ``{--pg-user or postgres}@<same host as TCP --pg-host>`` for other TCP hosts. Client needs
 ``ssh``; if ``PGPASSWORD`` is set (``--pg-password`` / env), non-interactive SSH uses
-``sshpass`` when installed (same secret as the Unix login on the server). Optional
+``sshpass`` when installed (same secret as the Unix login on the server; the password is
+also read from ``~/.pgpass`` / ``PGPASSFILE`` when ``PGPASSWORD`` is unset). Optional
 ``--pgbench-perf-ssh-opts`` passes extra ``ssh`` arguments (e.g. ``-i`` for a key).
 ``--pgbench-perf-ssh-password`` forces interactive SSH password from a TTY.
 If ``authorized_keys`` uses ``command=...``, remote perf can break (shell ``set`` dumps).
@@ -53,6 +54,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -60,6 +62,7 @@ import shlex
 import select
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -248,6 +251,73 @@ def _pg_auth_failure_hint() -> str:
 def _use_tcp(host: str) -> bool:
     """If False, use libpq default (usually Unix socket)."""
     return bool(host.strip() and host.strip().lower() not in ("local", "unix"))
+
+
+def _split_pgpass_fields(line: str) -> Optional[list[str]]:
+    """Split one non-comment ``.pgpass`` line into five colon-separated fields (libpq escaping)."""
+    s = line.strip()
+    if not s or s.startswith("#"):
+        return None
+    fields: list[str] = []
+    cur: list[str] = []
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\" and i + 1 < n:
+            cur.append(s[i + 1])
+            i += 2
+            continue
+        if c == ":":
+            fields.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(c)
+        i += 1
+    fields.append("".join(cur))
+    if len(fields) != 5:
+        return None
+    return fields
+
+
+def _pgpass_field_match(value: str, pattern: str) -> bool:
+    return pattern == "*" or value == pattern
+
+
+def _lookup_pgpass_password(host: str, port: int, user: str, database: str) -> Optional[str]:
+    """
+    First matching password from ``PGPASSFILE`` or ``~/.pgpass`` (file must not be
+    group- or world-readable, same rule as libpq).
+    """
+    path = os.environ.get("PGPASSFILE") or os.path.expanduser("~/.pgpass")
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        mode = os.stat(path).st_mode
+        if mode & (stat.S_IRWXG | stat.S_IRWXO):
+            return None
+    except OSError:
+        return None
+    port_s = str(port)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                parts = _split_pgpass_fields(raw.rstrip("\r\n"))
+                if not parts:
+                    continue
+                phost, pport, pdb, puser, ppassword = parts
+                if not (
+                    _pgpass_field_match(host, phost)
+                    and _pgpass_field_match(port_s, pport)
+                    and _pgpass_field_match(database, pdb)
+                    and _pgpass_field_match(user, puser)
+                ):
+                    continue
+                return ppassword
+    except OSError:
+        return None
+    return None
 
 
 def _infer_loopback_network_iface(pg_host: str) -> Optional[str]:
@@ -892,6 +962,16 @@ def run_with_perf_monitor_pids_remote_ssh(
             file=sys.stderr,
             flush=True,
         )
+        if "Permission denied" in early and not use_sshpass:
+            print(
+                "Hint: SSH failed without a password. Use the same secret as PostgreSQL: "
+                "`--pg-password` or `PGPASSWORD`, or a strict-perms ~/.pgpass line matching this "
+                "host/port/user/database; install `sshpass` for non-interactive SSH password. "
+                "Alternatively use `--pgbench-perf-ssh-password` on a real TTY or public keys "
+                "via `--pgbench-perf-ssh-opts \"-i ...\"`.",
+                file=sys.stderr,
+                flush=True,
+            )
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
 
@@ -1248,6 +1328,30 @@ def main() -> None:
     ssh_sshpass_pw: Optional[str] = None
     if perf_ssh_target and not args.pgbench_perf_ssh_password:
         _pw = (pg_env.get("PGPASSWORD") or "").strip()
+        if not _pw and _use_tcp(args.pg_host):
+            _lu = args.pg_user.strip() or getpass.getuser()
+            _ld = args.pg_database.strip() or _lu
+            _pw = (
+                _lookup_pgpass_password(
+                    args.pg_host.strip(),
+                    args.pg_port,
+                    _lu,
+                    _ld,
+                )
+                or ""
+            ).strip()
+            if not _pw and not args.pg_user.strip():
+                _lu = "postgres"
+                _ld = args.pg_database.strip() or _lu
+                _pw = (
+                    _lookup_pgpass_password(
+                        args.pg_host.strip(),
+                        args.pg_port,
+                        _lu,
+                        _ld,
+                    )
+                    or ""
+                ).strip()
         if _pw:
             if shutil.which("sshpass"):
                 ssh_sshpass_pw = _pw
