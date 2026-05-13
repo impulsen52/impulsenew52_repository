@@ -278,7 +278,7 @@ def _ssh_login_user_is_root(ssh_target: str) -> bool:
 
 
 def _ssh_capture_looks_like_forced_bash_set_dump(blob: str) -> bool:
-    """Heuristic: ssh authorized_keys command= forced a bare ``set`` or similar, not perf."""
+    """Heuristic: remote ran bare bash ``set`` (dump of env/functions), not ``perf stat``."""
     if "Performance counter stats" in blob:
         return False
     return "BASH_EXECUTION_STRING=" in blob and "which ()" in blob
@@ -722,8 +722,9 @@ def run_with_perf_monitor_pids_remote_ssh(
     """
     Run workload locally while ``perf stat -p $(pgrep -x postgres)`` runs on ``ssh_target``.
 
-    Mirrors :func:`run_with_perf_monitor_pids`: long remote ``sleep`` under perf,
-    stop via SIGINT when the local workload finishes.
+    Remote command is sent on **stdin** to ``bash --noprofile --norc -s`` (not ``-c``), so a
+    nonstandard ``sshd``/wrapper is less likely to mangle or truncate the script into a bare
+    ``set`` (``BASH_EXECUTION_STRING=set`` in captured output).
     """
     use_sudo_on_remote = remote_use_sudo and not _ssh_login_user_is_root(ssh_target)
     perf_inv = (
@@ -757,14 +758,16 @@ def run_with_perf_monitor_pids_remote_ssh(
         ["ssh", "-T"]
         + list(ssh_extra)
         + ssh_trailer
-        + [ssh_target, "bash", "--noprofile", "--norc", "-c", remote_script]
+        + [ssh_target, "bash", "--noprofile", "--norc", "-s"]
     )
     try:
         perf_proc = subprocess.Popen(
             ssh_cmd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             env=env,
             start_new_session=True,
         )
@@ -776,6 +779,21 @@ def run_with_perf_monitor_pids_remote_ssh(
         )
         p = _run_cmd(workload_cmd, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr, None
+
+    if perf_proc.stdin:
+        try:
+            perf_proc.stdin.write(remote_script + "\n")
+            perf_proc.stdin.close()
+        except OSError as exc:
+            print(
+                f"pgbench (remote server perf): could not send script to ssh ({exc}); "
+                "running without perf.",
+                file=sys.stderr,
+                flush=True,
+            )
+            _stop_perf_monitor_and_read(perf_proc)
+            p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+            return p.returncode, p.stdout, p.stderr, None
 
     time.sleep(0.2)
     if perf_proc.poll() is not None:
@@ -812,10 +830,10 @@ def run_with_perf_monitor_pids_remote_ssh(
     ):
         print(
             "pgbench (remote server perf): captured output looks like a bare bash 'set' dump, "
-            "not perf. On the DB host, check ~/.ssh/authorized_keys for this key: a "
-            "'command=...' option overrides the remote command (often a typo or bad paste). "
-            "Remove forced command or use a key without it; advanced setups can wrap "
-            "$SSH_ORIGINAL_COMMAND per OpenSSH docs.",
+            "not perf. Check the DB host: sshd_config ForceCommand / Match, "
+            "PAM/session hooks, or ~/.ssh/authorized_keys 'command=' (including other files "
+            "via AuthorizedKeysFile). Also ensure you run a current vm_benchmark that sends "
+            "the remote script via stdin (bash -s), not a truncated '-c' argument.",
             file=sys.stderr,
             flush=True,
         )
