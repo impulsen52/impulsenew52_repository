@@ -7,11 +7,11 @@ available. For each CPU load level (0, 20, ...), optional stress-ng on the VM,
 then pgbench (with optional perf stat), then linpack (with optional perf stat).
 
 Optional --network-iface (e.g. eth0) records RX/TX Mbit/s per phase from /sys/class/net.
+If omitted, loopback ``--pg-host`` uses ``lo`` so local TCP rows get NIC columns
+(Unix sockets do not use ``lo`` — see stderr note); remote TCP hosts use the outbound
+interface from ``ip route get`` when ``ip`` is available.
 By default pgbench perf samples PostgreSQL server processes (``--pgbench-perf-target server``);
 use ``client`` to measure the pgbench driver instead.
-If omitted and --pg-host is loopback (localhost, 127.0.0.1, ::1) or ``local``, ``lo`` is
-used automatically so local TCP/formatter tables get NIC columns (Unix sockets do not
-use ``lo`` - see stderr note).
 
 Dependencies (typical Debian package names):
   postgresql, postgresql-client  ->  pg_isready, psql, pgbench (default path /usr/bin/pgbench)
@@ -244,6 +244,35 @@ def _infer_loopback_network_iface(pg_host: str) -> Optional[str]:
         if _net_iface_exists("lo"):
             return "lo"
     return None
+
+
+def _infer_route_network_iface(pg_host: str) -> Optional[str]:
+    """Outbound interface for TCP PG host, from `ip route get` (for /sys RX/TX)."""
+    h = pg_host.strip()
+    if not h or h.lower() in ("local", "unix"):
+        return None
+    if not _use_tcp(pg_host):
+        return None
+    if h.lower() in ("localhost", "127.0.0.1", "::1"):
+        return None
+    out = ""
+    for cmd in (["ip", "-4", "route", "get", h], ["ip", "route", "get", h]):
+        try:
+            p = _run_cmd(cmd, timeout=5)
+        except OSError:
+            return None
+        if p.returncode == 0 and p.stdout.strip():
+            out = p.stdout.strip()
+            break
+    if not out:
+        return None
+    m = re.search(r"\bdev\s+(\S+)", out)
+    if not m:
+        return None
+    dev = m.group(1)
+    if dev == "lo" or not _net_iface_exists(dev):
+        return None
+    return dev
 
 
 def _pg_host_colocated_for_server_perf(host: str) -> bool:
@@ -849,7 +878,8 @@ def main() -> None:
         metavar="IFACE",
         help=(
             "If set (e.g. eth0), record NIC RX/TX from /sys during each pgbench/linpack phase. "
-            "If empty and --pg-host is localhost/127.0.0.1/::1/local, lo is used automatically."
+            "If empty: loopback PG hosts use lo; remote TCP hosts use the outbound iface from "
+            "`ip route get` when `ip` is available (override with this flag)."
         ),
     )
     ap.add_argument("-o", "--output", default="")
@@ -930,6 +960,15 @@ def main() -> None:
                 print(
                     "Note: --pg-host local uses Unix sockets; lo RX/TX does not include "
                     "Postgres traffic. Use --pg-host 127.0.0.1 (TCP) to measure DB on lo.",
+                    file=sys.stderr,
+                )
+        else:
+            auto_rt = _infer_route_network_iface(args.pg_host)
+            if auto_rt:
+                network_iface = auto_rt
+                print(
+                    f"Note: NIC stats use outbound iface {auto_rt!r} "
+                    f"(routing to {args.pg_host.strip()}; override with --network-iface).",
                     file=sys.stderr,
                 )
     if network_iface and not _net_iface_exists(network_iface):
