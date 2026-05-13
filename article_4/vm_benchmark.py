@@ -7,6 +7,8 @@ available. For each CPU load level (0, 20, ...), optional stress-ng on the VM,
 then pgbench (with optional perf stat), then linpack (with optional perf stat).
 
 Optional --network-iface (e.g. eth0) records RX/TX Mbit/s per phase from /sys/class/net.
+By default pgbench perf samples PostgreSQL server processes (``--pgbench-perf-target server``);
+use ``client`` to measure the pgbench driver instead.
 If omitted and --pg-host is loopback (localhost, 127.0.0.1, ::1) or ``local``, ``lo`` is
 used automatically so local TCP/formatter tables get NIC columns (Unix sockets do not
 use ``lo`` - see stderr note).
@@ -64,13 +66,20 @@ class PerfMetrics:
     duration_sec: Optional[float] = None
     page_faults: Optional[int] = None
     context_switches: Optional[int] = None
+    counter_target: Optional[str] = None
+    monitored_pid_count: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "duration_sec": self.duration_sec,
             "page_faults": self.page_faults,
             "context_switches": self.context_switches,
         }
+        if self.counter_target:
+            d["counter_target"] = self.counter_target
+        if self.monitored_pid_count is not None:
+            d["monitored_pid_count"] = self.monitored_pid_count
+        return d
 
 
 @dataclass
@@ -223,6 +232,34 @@ def _infer_loopback_network_iface(pg_host: str) -> Optional[str]:
         if _net_iface_exists("lo"):
             return "lo"
     return None
+
+
+def _pg_host_colocated_for_server_perf(host: str) -> bool:
+    """True if Postgres is expected on this machine (socket or loopback TCP)."""
+    h = host.strip().lower()
+    if not h or h in ("local", "unix"):
+        return True
+    return h in ("localhost", "127.0.0.1", "::1")
+
+
+def _native_postgres_host_pids() -> list[int]:
+    p = _run_cmd(["pgrep", "-x", "postgres"], timeout=30)
+    acc: list[int] = []
+    if p.returncode == 0 and p.stdout.strip():
+        for line in p.stdout.splitlines():
+            t = line.strip()
+            if t.isdigit():
+                acc.append(int(t))
+    if acc:
+        return sorted(set(acc))
+    p2 = _run_cmd(["pidof", "postgres"], timeout=30)
+    if p2.returncode != 0 or not p2.stdout.strip():
+        return []
+    for t in p2.stdout.split():
+        st = t.strip()
+        if st.isdigit():
+            acc.append(int(st))
+    return sorted(set(acc))
 
 
 def _pg_conn_args(
@@ -446,6 +483,7 @@ def run_with_perf(
     timeout: Optional[float] = None,
     env: Optional[dict[str, str]] = None,
     prefix_cmd: Optional[list[str]] = None,
+    counter_target: Optional[str] = None,
 ) -> tuple[int, str, str, Optional[PerfMetrics]]:
     """
     Run base_cmd optionally under perf stat.
@@ -456,7 +494,6 @@ def run_with_perf(
     """
     prefix = list(prefix_cmd) if prefix_cmd else []
     if use_perf:
-        # Check perf as the invoking user only; the benchmark may run perf under sudo.
         perf_check = _run_cmd(["perf", "stat", "true"], env=env)
         if perf_check.returncode != 0:
             use_perf = False
@@ -476,7 +513,61 @@ def run_with_perf(
     perf_m: Optional[PerfMetrics] = None
     if use_perf:
         perf_m = _parse_perf_stat(p.stderr)
+        if perf_m and counter_target:
+            perf_m.counter_target = counter_target
     return p.returncode, p.stdout, p.stderr, perf_m
+
+
+def run_with_perf_monitor_pids(
+    workload_cmd: list[str],
+    pids: list[int],
+    *,
+    timeout: Optional[float] = None,
+    env: Optional[dict[str, str]] = None,
+    counter_target: str = "postgres_host_pids",
+) -> tuple[int, str, str, Optional[PerfMetrics]]:
+    """perf stat -p … for Postgres PIDs while workload_cmd runs (no perf around pgbench)."""
+    pids = sorted(set(pids))
+    if not pids:
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+    perf_check = _run_cmd(["perf", "stat", "true"], env=env)
+    if perf_check.returncode != 0:
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr, None
+    pid_arg = ",".join(str(x) for x in pids)
+    perf_cmd = [
+        "perf",
+        "stat",
+        "-e",
+        "duration_time,page-faults,context-switches",
+        "-B",
+        "-p",
+        pid_arg,
+        "--",
+        "sleep",
+        "86400",
+    ]
+    perf_proc = subprocess.Popen(
+        perf_cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        p = _run_cmd(workload_cmd, timeout=timeout, env=env)
+        rc, out, err = p.returncode, p.stdout, p.stderr
+    finally:
+        perf_proc.terminate()
+        try:
+            _, perf_stderr = perf_proc.communicate(timeout=45)
+        except subprocess.TimeoutExpired:
+            perf_proc.kill()
+            _, perf_stderr = perf_proc.communicate(timeout=10)
+    perf_m = _parse_perf_stat(perf_stderr or "")
+    perf_m.counter_target = counter_target
+    perf_m.monitored_pid_count = len(pids)
+    return rc, out, err, perf_m
 
 
 class NativeStressController:
@@ -619,6 +710,15 @@ def main() -> None:
         help="Comma-separated CPU load percents (default 0,20,...,100)",
     )
     ap.add_argument("--no-perf", action="store_true")
+    ap.add_argument(
+        "--pgbench-perf-target",
+        choices=("server", "client"),
+        default="server",
+        help=(
+            "pgbench: perf samples PostgreSQL server PIDs on this machine (default) while "
+            "pgbench runs; use client to wrap pgbench. Server mode needs local/loopback DB."
+        ),
+    )
     ap.add_argument(
         "--no-stress",
         action="store_true",
@@ -827,13 +927,69 @@ def main() -> None:
                 if network_iface:
                     rx0, tx0 = read_net_rx_tx_bytes(network_iface)
                     t0 = time.time()
-                code, out, err, perf_m = run_with_perf(
-                    _pgbench_cmd(),
-                    use_perf=not args.no_perf,
-                    timeout=_pgbench_timeout_sec(),
-                    env=pg_env,
-                    prefix_cmd=pgbench_sudo_prefix,
-                )
+                def _full_pgbench_argv() -> list[str]:
+                    return (pgbench_sudo_prefix or []) + _pgbench_cmd()
+
+                p_target = (args.pgbench_perf_target or "server").lower()
+                coloc = _pg_host_colocated_for_server_perf(args.pg_host)
+                use_server_perf = not args.no_perf and p_target == "server" and coloc
+                to = _pgbench_timeout_sec()
+                if args.no_perf:
+                    p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
+                    code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
+                elif use_server_perf:
+                    pids = _native_postgres_host_pids()
+                    if not pids:
+                        print(
+                            "pgbench: no local postgres PIDs (pgrep); running without perf.",
+                            file=sys.stderr,
+                        )
+                        p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
+                        code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
+                    else:
+                        try:
+                            code, out, err, perf_m = run_with_perf_monitor_pids(
+                                _full_pgbench_argv(),
+                                pids,
+                                timeout=to,
+                                env=pg_env,
+                            )
+                        except OSError as exc:
+                            print(
+                                f"pgbench: server perf failed ({exc}); "
+                                "running without perf.",
+                                file=sys.stderr,
+                            )
+                            p = _run_cmd(_full_pgbench_argv(), timeout=to, env=pg_env)
+                            code, out, err, perf_m = (
+                                p.returncode,
+                                p.stdout,
+                                p.stderr,
+                                None,
+                            )
+                elif not coloc and p_target == "server":
+                    print(
+                        f"pgbench: --pg-host {args.pg_host!r} is not on this machine; "
+                        "using perf on the pgbench client.",
+                        file=sys.stderr,
+                    )
+                    code, out, err, perf_m = run_with_perf(
+                        _pgbench_cmd(),
+                        use_perf=True,
+                        timeout=to,
+                        env=pg_env,
+                        prefix_cmd=pgbench_sudo_prefix,
+                        counter_target="pgbench_client",
+                    )
+                else:
+                    code, out, err, perf_m = run_with_perf(
+                        _pgbench_cmd(),
+                        use_perf=True,
+                        timeout=to,
+                        env=pg_env,
+                        prefix_cmd=pgbench_sudo_prefix,
+                        counter_target="pgbench_client",
+                    )
                 if network_iface:
                     t1 = time.time()
                     rx1, tx1 = read_net_rx_tx_bytes(network_iface)
@@ -874,6 +1030,7 @@ def main() -> None:
                     use_perf=not args.no_perf,
                     timeout=600.0,
                     env=linpack_run_env,
+                    counter_target="linpack",
                 )
                 if network_iface:
                     t1 = time.time()

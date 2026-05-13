@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Docker host benchmark driver: PostgreSQL (pgbench) then linpack at CPU load 0-100%,
-with stress-ng on the host and perf stat metrics when available.
+with stress-ng on the host and perf stat metrics when available. For pgbench, perf
+samples PostgreSQL PIDs in the server container by default (``--pgbench-perf-target server``).
 
 Optional --network-iface records RX/TX Mbit/s per phase from Linux /sys counters.
 
@@ -145,6 +146,16 @@ def main() -> None:
             "each pgbench/linpack phase (whole-machine NIC counters)."
         ),
     )
+    parser.add_argument(
+        "--pgbench-perf-target",
+        choices=("server", "client"),
+        default="server",
+        help=(
+            "pgbench: sample perf counters for PostgreSQL host PIDs while pgbench runs "
+            "unwrapped (server, default), or wrap the pgbench process (client). "
+            "Server mode needs loopback --pg-host from the Postgres container."
+        ),
+    )
     args = parser.parse_args()
 
     if args.linpack_array_size is not None and args.linpack_array_size < 10:
@@ -226,6 +237,7 @@ def main() -> None:
         pg_port=args.pg_port,
         docker_pg_exec_env=docker_pg_exec_env,
         pgbench_transactions=args.pgbench_transactions,
+        pgbench_perf_target=args.pgbench_perf_target,
     )
     text = report_to_json(report)
     if args.output:

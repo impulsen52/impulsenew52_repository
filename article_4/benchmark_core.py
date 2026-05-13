@@ -38,13 +38,22 @@ class PerfMetrics:
     page_faults: Optional[int] = None
     context_switches: Optional[int] = None
     raw_stderr: str = ""
+    #: What ``perf`` attributed counters to, e.g. ``postgres_host_pids`` vs ``pgbench_client``.
+    counter_target: Optional[str] = None
+    #: When ``counter_target`` is process-scoped, how many PIDs were passed to ``perf -p``.
+    monitored_pid_count: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "duration_sec": self.duration_sec,
             "page_faults": self.page_faults,
             "context_switches": self.context_switches,
         }
+        if self.counter_target:
+            d["counter_target"] = self.counter_target
+        if self.monitored_pid_count is not None:
+            d["monitored_pid_count"] = self.monitored_pid_count
+        return d
 
 
 @dataclass
@@ -435,6 +444,7 @@ def run_with_perf(
     *,
     use_perf: bool = True,
     timeout: Optional[float] = None,
+    counter_target: Optional[str] = None,
 ) -> tuple[int, str, str, Optional[PerfMetrics]]:
     if use_perf:
         perf_check = _run_cmd(["perf", "stat", "true"])
@@ -455,7 +465,98 @@ def run_with_perf(
     perf_metrics: Optional[PerfMetrics] = None
     if use_perf:
         perf_metrics = _parse_perf_stat(p.stderr)
+        if perf_metrics and counter_target:
+            perf_metrics.counter_target = counter_target
     return p.returncode, p.stdout, p.stderr, perf_metrics
+
+
+def _pg_host_is_docker_local(pg_host: str) -> bool:
+    """DB address is loopback from the Postgres container (co-located benchmark)."""
+    h = pg_host.strip().lower()
+    return h in ("localhost", "127.0.0.1", "::1")
+
+
+def _docker_postgres_host_pids(container: str) -> list[int]:
+    """
+    Host-visible PIDs for ``postgres`` processes in a container (``docker top``).
+    Excludes ``pgbench`` utility lines if present.
+    """
+    p = _run_cmd(["docker", "top", container, "--no-stream"], timeout=60)
+    if p.returncode != 0 or not (p.stdout and p.stdout.strip()):
+        return []
+    pids: list[int] = []
+    for line in p.stdout.splitlines():
+        ls = line.strip()
+        if not ls or ls.upper().startswith("UID"):
+            continue
+        low = ls.lower()
+        if "postgres" not in low or "pgbench" in low:
+            continue
+        m = re.match(r"^\S+\s+(\d+)\s+\d+", ls)
+        if m:
+            pids.append(int(m.group(1)))
+    uniq = sorted(set(pids))
+    if uniq:
+        return uniq
+    r = _run_cmd(["docker", "inspect", "-f", "{{.State.Pid}}", container], timeout=30)
+    if r.returncode != 0 or not r.stdout.strip().isdigit():
+        return []
+    return [int(r.stdout.strip())]
+
+
+def run_with_perf_monitor_pids(
+    workload_cmd: list[str],
+    pids: list[int],
+    *,
+    timeout: Optional[float] = None,
+    counter_target: str = "postgres_host_pids",
+) -> tuple[int, str, str, Optional[PerfMetrics]]:
+    """
+    Run ``workload_cmd`` without wrapping it in perf; sample ``perf stat`` for ``-p`` PIDs
+    for the same wall-clock window (Postgres backends on the host / VM).
+    """
+    pids = sorted(set(pids))
+    if not pids:
+        p = _run_cmd(workload_cmd, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr, None
+    perf_check = _run_cmd(["perf", "stat", "true"])
+    if perf_check.returncode != 0:
+        p = _run_cmd(workload_cmd, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr, None
+    pid_arg = ",".join(str(x) for x in pids)
+    perf_cmd = [
+        "perf",
+        "stat",
+        "-e",
+        "duration_time,page-faults,context-switches",
+        "-B",
+        "-p",
+        pid_arg,
+        "--",
+        "sleep",
+        "86400",
+    ]
+    perf_proc = subprocess.Popen(
+        perf_cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        p = _run_cmd(workload_cmd, timeout=timeout)
+        rc, out, err = p.returncode, p.stdout, p.stderr
+    finally:
+        perf_proc.terminate()
+        try:
+            _, perf_stderr = perf_proc.communicate(timeout=45)
+        except subprocess.TimeoutExpired:
+            perf_proc.kill()
+            _, perf_stderr = perf_proc.communicate(timeout=10)
+    perf_m = _parse_perf_stat(perf_stderr or "")
+    perf_m.counter_target = counter_target
+    perf_m.monitored_pid_count = len(pids)
+    perf_m.raw_stderr = perf_stderr or ""
+    return rc, out, err, perf_m
 
 
 class StressController:
@@ -524,6 +625,7 @@ def run_pgbench_iter(
     use_perf: bool = True,
     exec_env: Optional[dict[str, str]] = None,
     transactions: Optional[int] = None,
+    pgbench_perf_target: str = "server",
 ) -> tuple[Optional[float], Optional[PerfMetrics], str, str, Optional[str], int]:
     bench_args: list[str] = [
         "pgbench",
@@ -547,7 +649,56 @@ def run_pgbench_iter(
     timeout = _pgbench_run_timeout_sec(
         duration=duration, transactions=transactions, clients=clients
     )
-    code, out, err, perf_m = run_with_perf(base, use_perf=use_perf, timeout=timeout)
+    use_server_perf = (
+        use_perf
+        and (pgbench_perf_target or "server").lower() == "server"
+        and _pg_host_is_docker_local(pg_host)
+    )
+    if not use_perf:
+        p = _run_cmd(base, timeout=timeout)
+        code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
+    elif use_server_perf:
+        pids = _docker_postgres_host_pids(container)
+        if not pids:
+            print(
+                "pgbench: no Postgres PIDs from docker top; "
+                "run without perf for this phase (install/report docker top).",
+                file=sys.stderr,
+            )
+            p = _run_cmd(base, timeout=timeout)
+            code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
+        else:
+            try:
+                code, out, err, perf_m = run_with_perf_monitor_pids(
+                    base, pids, timeout=timeout, counter_target="postgres_host_pids"
+                )
+            except OSError as exc:
+                print(
+                    f"pgbench: server-targeted perf failed ({exc}); "
+                    "retrying without perf.",
+                    file=sys.stderr,
+                )
+                p = _run_cmd(base, timeout=timeout)
+                code, out, err, perf_m = p.returncode, p.stdout, p.stderr, None
+    elif not use_server_perf and (pgbench_perf_target or "").lower() == "server":
+        print(
+            f"pgbench: --pg-host {pg_host!r} is not loopback from the Postgres "
+            "container; using perf on the pgbench client (or use --pgbench-perf-target client).",
+            file=sys.stderr,
+        )
+        code, out, err, perf_m = run_with_perf(
+            base,
+            use_perf=True,
+            timeout=timeout,
+            counter_target="pgbench_client",
+        )
+    else:
+        code, out, err, perf_m = run_with_perf(
+            base,
+            use_perf=True,
+            timeout=timeout,
+            counter_target="pgbench_client",
+        )
     tps = parse_pgbench_tps(out + err)
     err_msg = None if code == 0 else f"pgbench exit {code}"
     return tps, perf_m, out, err, err_msg, code
@@ -599,7 +750,9 @@ def run_linpack_iter(
         for key in sorted(linpack_env.keys()):
             cmd.extend(["-e", f"{key}={linpack_env[key]}"])
     cmd.append(image)
-    code, out, err, perf_m = run_with_perf(cmd, use_perf=use_perf, timeout=timeout)
+    code, out, err, perf_m = run_with_perf(
+        cmd, use_perf=use_perf, timeout=timeout, counter_target="linpack"
+    )
     text = out + err
     mflops = parse_linpack_mflops(text)
     ok = _linpack_run_ok(code, text, mflops)
@@ -626,6 +779,7 @@ def run_sequential_suite(
     pg_port: int = 5432,
     docker_pg_exec_env: Optional[dict[str, str]] = None,
     pgbench_transactions: Optional[int] = None,
+    pgbench_perf_target: str = "server",
 ) -> BenchReport:
     levels = list(load_levels)
     linpack_env = build_linpack_run_env(
@@ -671,6 +825,7 @@ def run_sequential_suite(
                     pg_port=pg_port,
                     exec_env=docker_pg_exec_env,
                     transactions=pgbench_transactions,
+                    pgbench_perf_target=pgbench_perf_target,
                 )
                 if network_iface:
                     t1 = time.time()
