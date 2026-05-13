@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -53,6 +54,12 @@ class PerfMetrics:
             d["counter_target"] = self.counter_target
         if self.monitored_pid_count is not None:
             d["monitored_pid_count"] = self.monitored_pid_count
+        if self.raw_stderr.strip() and (
+            self.duration_sec is None
+            and self.page_faults is None
+            and self.context_switches is None
+        ):
+            d["perf_raw_tail"] = self.raw_stderr.strip()[-2000:]
         return d
 
 
@@ -409,13 +416,15 @@ def _perf_normalize_elapsed(raw: str, unit: str) -> float:
         return val / 1000.0
     if u.startswith("usec"):
         return val / 1_000_000.0
+    if u.startswith("sec"):
+        return val
     return val
 
 
 def _parse_perf_stat(stderr: str) -> PerfMetrics:
     metrics = PerfMetrics(raw_stderr=stderr)
     m = re.search(
-        r"([0-9][0-9\u202f\s,.]*)\s+(msec|seconds|usec)\s+time elapsed",
+        r"([0-9][0-9\u202f\s,.]*)\s+(msec|seconds?|sec|usec)\s+time elapsed",
         stderr,
         re.IGNORECASE,
     )
@@ -504,6 +513,38 @@ def _docker_postgres_host_pids(container: str) -> list[int]:
     return [int(r.stdout.strip())]
 
 
+def _perf_monitor_elevation_prefix() -> list[str]:
+    """
+    ``perf -p`` against PostgreSQL usually needs root: the server runs as ``postgres``.
+    Use non-interactive sudo when available so the monitor does not silently record nothing.
+    """
+    if getattr(os, "geteuid", lambda: 0)() == 0:
+        return []
+    r = _run_cmd(["sudo", "-n", "true"], timeout=5)
+    if r.returncode == 0:
+        return ["sudo", "-n", "--"]
+    return []
+
+
+def _stop_perf_monitor_and_read(perf_proc: subprocess.Popen[str]) -> str:
+    """Ask perf for the counter summary (SIGINT) then read merged output."""
+    if perf_proc.poll() is None:
+        try:
+            perf_proc.send_signal(signal.SIGINT)
+        except ProcessLookupError:
+            pass
+    try:
+        out, _ = perf_proc.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        perf_proc.terminate()
+        try:
+            out, _ = perf_proc.communicate(timeout=12)
+        except subprocess.TimeoutExpired:
+            perf_proc.kill()
+            out, _ = perf_proc.communicate(timeout=5)
+    return out or ""
+
+
 def run_with_perf_monitor_pids(
     workload_cmd: list[str],
     pids: list[int],
@@ -519,12 +560,20 @@ def run_with_perf_monitor_pids(
     if not pids:
         p = _run_cmd(workload_cmd, timeout=timeout)
         return p.returncode, p.stdout, p.stderr, None
-    perf_check = _run_cmd(["perf", "stat", "true"])
+    elev = _perf_monitor_elevation_prefix()
+    if not elev and getattr(os, "geteuid", lambda: 0)() != 0:
+        print(
+            "pgbench (server perf): not root and `sudo -n` unavailable; "
+            "`perf -p` on postgres PIDs may yield empty metrics. "
+            "Allow NOPASSWD for sudo, run as root, or use --pgbench-perf-target client.",
+            file=sys.stderr,
+        )
+    perf_check = _run_cmd(elev + ["perf", "stat", "true"])
     if perf_check.returncode != 0:
         p = _run_cmd(workload_cmd, timeout=timeout)
         return p.returncode, p.stdout, p.stderr, None
     pid_arg = ",".join(str(x) for x in pids)
-    perf_cmd = [
+    perf_cmd = elev + [
         "perf",
         "stat",
         "-e",
@@ -538,24 +587,30 @@ def run_with_perf_monitor_pids(
     ]
     perf_proc = subprocess.Popen(
         perf_cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
     )
     try:
         p = _run_cmd(workload_cmd, timeout=timeout)
         rc, out, err = p.returncode, p.stdout, p.stderr
     finally:
-        perf_proc.terminate()
-        try:
-            _, perf_stderr = perf_proc.communicate(timeout=45)
-        except subprocess.TimeoutExpired:
-            perf_proc.kill()
-            _, perf_stderr = perf_proc.communicate(timeout=10)
-    perf_m = _parse_perf_stat(perf_stderr or "")
+        blob = _stop_perf_monitor_and_read(perf_proc)
+    perf_m = _parse_perf_stat(blob)
     perf_m.counter_target = counter_target
     perf_m.monitored_pid_count = len(pids)
-    perf_m.raw_stderr = perf_stderr or ""
+    perf_m.raw_stderr = blob
+    if (
+        perf_m.duration_sec is None
+        and perf_m.page_faults is None
+        and perf_m.context_switches is None
+        and not blob.strip()
+    ):
+        print(
+            "pgbench (server perf): perf produced no output after the run. "
+            "See Linux kernel.perf_event_paranoid and permissions on perf -p.",
+            file=sys.stderr,
+        )
     return rc, out, err, perf_m
 
 
