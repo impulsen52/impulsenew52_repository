@@ -20,12 +20,13 @@ Dependencies (typical Debian package names):
   For --pgbench-perf-target server, non-root users need passwordless ``sudo -n``
   so ``perf -p`` can attach to postgres PIDs (or run the script as root).
   Remote DB: use ``--pgbench-perf-ssh user@db_host`` so ``perf -p`` runs on the
-  server over SSH (needs key-based or agent auth; ``perf`` and usually passwordless
-  ``sudo -n`` there unless ``--pgbench-perf-ssh-no-sudo``). SSH uses ``BatchMode=yes`` and a
-  connect timeout so missing keys do not hang silently. The target user need not be root:
-  any account with SSH shell access and the ability to run ``perf`` against postgres PIDs
-  (e.g. sudoers: ``benchmark ALL=(ALL) NOPASSWD: /usr/bin/perf``). The DB ``postgres`` OS
-  role often has no SSH/shell — create a dedicated benchmark user instead of ``root@``.
+  server over SSH (needs key-based or agent auth). SSH uses ``BatchMode=yes``, a connect
+  timeout, and ``IdentitiesOnly=yes`` when ``-i`` is passed under ``--pgbench-perf-ssh-opts``.
+  The remote command uses a non-login bash (no profile/rc) so perf output is not mixed with
+  shell startup noise. Non-root SSH users usually need passwordless ``sudo -n`` for
+  ``perf`` on the server, or ``--pgbench-perf-ssh-no-sudo`` when policy allows; for
+  ``root@host``, ``perf`` is invoked without a remote ``sudo`` wrap. The DB ``postgres`` OS
+  role often has no SSH/shell — use a dedicated benchmark account when possible.
   linpack: build from https://github.com/ereyes01/linpack
     gcc -O3 -o linpack linpack.c -lm
 
@@ -262,6 +263,15 @@ def _pg_host_colocated_for_server_perf(host: str) -> bool:
     if not h or h in ("local", "unix"):
         return True
     return h in ("localhost", "127.0.0.1", "::1")
+
+
+def _ssh_login_user_is_root(ssh_target: str) -> bool:
+    """True for ssh targets like root@host (remote perf does not need sudo wrap)."""
+    t = ssh_target.strip()
+    if "@" not in t:
+        return False
+    user, _, _ = t.partition("@")
+    return user == "root"
 
 
 def _native_postgres_host_pids() -> list[int]:
@@ -705,10 +715,11 @@ def run_with_perf_monitor_pids_remote_ssh(
     Mirrors :func:`run_with_perf_monitor_pids`: long remote ``sleep`` under perf,
     stop via SIGINT when the local workload finishes.
     """
+    use_sudo_on_remote = remote_use_sudo and not _ssh_login_user_is_root(ssh_target)
     perf_inv = (
         "sudo -n -- perf stat -e duration_time,page-faults,context-switches "
         '-B -p "$PIDS" -- sleep 86400'
-        if remote_use_sudo
+        if use_sudo_on_remote
         else (
             "perf stat -e duration_time,page-faults,context-switches "
             '-B -p "$PIDS" -- sleep 86400'
@@ -720,19 +731,14 @@ def run_with_perf_monitor_pids_remote_ssh(
         'test -n "$PIDS" || exit 3; '
         "exec " + perf_inv
     )
+    ssh_trailer = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=25"]
+    if "-i" in ssh_extra:
+        ssh_trailer.extend(["-o", "IdentitiesOnly=yes"])
     ssh_cmd = (
         ["ssh", "-T"]
         + list(ssh_extra)
-        + [
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=25",
-            ssh_target,
-            "bash",
-            "-lc",
-            remote_script,
-        ]
+        + ssh_trailer
+        + [ssh_target, "bash", "--noprofile", "--norc", "-c", remote_script]
     )
     try:
         perf_proc = subprocess.Popen(
@@ -951,10 +957,10 @@ def main() -> None:
         help=(
             "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
             "SSH user@host (root not required). Appends -o BatchMode=yes -o ConnectTimeout=25 "
-            "after --pgbench-perf-ssh-opts (openssh: first -o wins). Needs a real login shell "
-            "and perf on the server: typically NOPASSWD sudo for /usr/bin/perf, or use "
-            "--pgbench-perf-ssh-no-sudo when unprivileged perf can trace postgres. The cluster "
-            "OS user postgres often cannot SSH — use e.g. a dedicated benchmark account."
+            "(and IdentitiesOnly=yes if -i is present in --pgbench-perf-ssh-opts) after your "
+            "ssh opts (openssh: first -o wins). On the server: perf must trace postgres PIDs "
+            "(NOPASSWD sudo for perf as non-root, or use --pgbench-perf-ssh-no-sudo; root@ "
+            "skips sudo on the remote side). The cluster OS user postgres often cannot SSH."
         ),
     )
     ap.add_argument(
@@ -1227,7 +1233,7 @@ def main() -> None:
                 elif use_remote_ssh_perf:
                     print(
                         f"vm_benchmark: remote server perf: opening SSH to {perf_ssh_target!r} "
-                        f"(BatchMode=yes, ConnectTimeout=25s; see --pgbench-perf-ssh-opts), "
+                        "(see --pgbench-perf-ssh / ssh BatchMode + timeouts), "
                         "then starting pgbench.",
                         file=sys.stderr,
                         flush=True,
