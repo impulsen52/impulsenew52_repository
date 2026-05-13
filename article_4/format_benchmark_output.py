@@ -181,7 +181,8 @@ def emit_text(data: dict[str, Any], *, source: Optional[Path] = None) -> str:
     ):
         chunks.append(
             "\n(no per-row \"network\" object in JSON; "
-            "pass the file from -o with --network-iface set)\n"
+            "re-run vm_benchmark with NIC capture: set --network-iface, or remote TCP with "
+            "the `ip` tool so the script can auto-pick the outbound iface)\n"
         )
 
     return "".join(chunks)
