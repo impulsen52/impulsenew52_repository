@@ -27,10 +27,12 @@ Dependencies (typical Debian package names):
   If ``authorized_keys`` uses ``command=...``, it overrides the remote command and breaks
   perf capture (often seen as a dump of bash variables from a stray ``set``).
   The remote command uses a non-login bash (no profile/rc) so perf output is not mixed with
-  shell startup noise. Non-root SSH users usually need passwordless ``sudo -n`` for
-  ``perf`` on the server, or ``--pgbench-perf-ssh-no-sudo`` when policy allows; for
-  ``root@host``, ``perf`` is invoked without a remote ``sudo`` wrap. The DB ``postgres`` OS
-  role often has no SSH/shell — use a dedicated benchmark account when possible.
+  shell startup noise. The SSH user on the server must be able to run ``perf`` against
+  postgres PIDs: usually passwordless ``sudo -n`` for ``/usr/bin/perf``, or use
+  ``--pgbench-perf-ssh-no-sudo`` when the kernel allows unprivileged ``perf -p`` for that
+  user. The cluster ``postgres`` OS account often ships with ``nologin`` and no SSH — see
+  your distro docs to enable a shell and ``authorized_keys`` only if policy allows, or use a
+  dedicated benchmark Unix user.
   linpack: build from https://github.com/ereyes01/linpack
     gcc -O3 -o linpack linpack.c -lm
 
@@ -267,15 +269,6 @@ def _pg_host_colocated_for_server_perf(host: str) -> bool:
     if not h or h in ("local", "unix"):
         return True
     return h in ("localhost", "127.0.0.1", "::1")
-
-
-def _ssh_login_user_is_root(ssh_target: str) -> bool:
-    """True for ssh targets like root@host (remote perf does not need sudo wrap)."""
-    t = ssh_target.strip()
-    if "@" not in t:
-        return False
-    user, _, _ = t.partition("@")
-    return user == "root"
 
 
 def _ssh_capture_looks_like_forced_bash_set_dump(blob: str) -> bool:
@@ -729,7 +722,7 @@ def run_with_perf_monitor_pids_remote_ssh(
     a TTY, use ``bash -c`` and **inherit stdin** so ssh can prompt; otherwise this cannot
     work (no askpass / no tty) and we skip remote perf.
     """
-    use_sudo_on_remote = remote_use_sudo and not _ssh_login_user_is_root(ssh_target)
+    use_sudo_on_remote = remote_use_sudo
     perf_inv = (
         "sudo -n -- perf stat -e duration_time,page-faults,context-switches "
         '-B -p "$PIDS" -- sleep 86400'
@@ -1036,12 +1029,11 @@ def main() -> None:
         metavar="USER@HOST",
         help=(
             "With --pgbench-perf-target server and a remote --pg-host, run perf -p on this "
-            "SSH user@host (root not required). Default: unattended key-based auth (ssh -T): "
-            "appends BatchMode, publickey-only, password prompts off, ConnectTimeout, "
-            "IdentitiesOnly if -i is in --pgbench-perf-ssh-opts. Use --pgbench-perf-ssh-password "
-            "for interactive root/host password instead (ssh -tt). On the server: perf must "
-            "trace postgres PIDs (NOPASSWD sudo for perf as non-root, or "
-            "--pgbench-perf-ssh-no-sudo; root@ skips remote sudo wrap)."
+            "SSH user@host. Default: unattended key-based auth (ssh -T): appends BatchMode, "
+            "publickey-only, password prompts off, ConnectTimeout, IdentitiesOnly if -i is in "
+            "--pgbench-perf-ssh-opts. Use --pgbench-perf-ssh-password for interactive "
+            "password (ssh -tt). On the server the script runs sudo -n -- perf ... unless "
+            "--pgbench-perf-ssh-no-sudo (needs NOPASSWD for perf or unprivileged perf policy)."
         ),
     )
     ap.add_argument(
@@ -1057,8 +1049,8 @@ def main() -> None:
             "Allow SSH password for remote perf: ssh -tt with stdin inherited (so ssh does not "
             "need ssh-askpass). Requires a real controlling TTY for this process (e.g. open "
             "TTY, not piping stdin / some IDE runners). Then the remote script is passed via "
-            "bash -c. Omit -i unless you use a key. Server: PasswordAuthentication and "
-            "PermitRootLogin as needed. Not for CI."
+            "bash -c. Omit -i unless you use a key. Server must allow password logins for "
+            "that account if you use passwords. Not for CI."
         ),
     )
     ap.add_argument(
